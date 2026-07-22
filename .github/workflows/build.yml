@@ -23,15 +23,23 @@ jobs:
   build:
     name: 官方 ImageBuilder
     needs: check
-    runs-on: [self-hosted, Linux, X64, homelab, lxc, openwrt-h5000m]
+    # GitHub-hosted x86_64 runner: native architecture for the ImageBuilder host
+    # tools, and a reliable network for the OpenWrt snapshot mirrors. No Docker
+    # or Rosetta needed here (that path is only for Apple Silicon local builds).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: 检出项目
         uses: actions/checkout@v4
 
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends squashfs-tools zstd
+
       - name: 构建并验证基础固件
         env:
-          OPENWRT_LOCAL_CACHE: /home/builder/openwrt-official-cache
+          OPENWRT_LOCAL_CACHE: ${{ runner.temp }}/openwrt-official-cache
           OPENWRT_LOCAL_ARTIFACTS: ${{ github.workspace }}/artifacts
         run: ./scripts/build-official-base-local.sh
 

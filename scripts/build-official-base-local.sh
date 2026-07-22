@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../configs/official-base.env
 source "${ROOT_DIR}/configs/official-base.env"
 
-CACHE_ROOT="${OPENWRT_LOCAL_CACHE:-${HOME}/cache}"
+CACHE_ROOT="${OPENWRT_LOCAL_CACHE:-${HOME}/.cache/openwrt-H5000M}"
 ARTIFACT_ROOT="${OPENWRT_LOCAL_ARTIFACTS:-${HOME}/artifacts}"
 DOWNLOAD_DIR="${CACHE_ROOT}/downloads"
 IMAGEBUILDER_DIR="${CACHE_ROOT}/imagebuilder/${IMAGEBUILDER_SHA256}"
@@ -15,7 +15,7 @@ TEMP_DIR="${ARTIFACT_ROOT}/.H5000M-official-base-${OPENWRT_REVISION}.tmp"
 LOCK_FILE="${CACHE_ROOT}/.official-base.lock"
 TARGET_DIR="${IMAGEBUILDER_DIR}/bin/targets/${OPENWRT_TARGET}"
 
-for command in curl flock make sha256sum strings tar unsquashfs; do
+for command in awk curl cut find flock make openssl sha256sum sort strings tar unsquashfs xargs zstd; do
   command -v "${command}" >/dev/null 2>&1 || {
     echo "Missing required command: ${command}" >&2
     exit 1
@@ -60,6 +60,29 @@ actual_revision="$(sed -n 's/^REVISION:=//p' "${IMAGEBUILDER_DIR}/include/versio
   exit 1
 }
 
+# Optional: seed the ImageBuilder's apk cache from the pinned feed-lock bundle so
+# the package closure is reproducible against snapshot mirror rolls. Off by
+# default; set OPENWRT_OFFLINE=1 (and cut the container network) to enforce it.
+if [ "${OPENWRT_OFFLINE:-0}" = 1 ]; then
+  # shellcheck source=../configs/official-base.feed.env
+  source "${ROOT_DIR}/configs/official-base.feed.env"
+  bundle="${OPENWRT_FEED_LOCK_BUNDLE:-${CACHE_ROOT}/feed-bundles/${FEED_LOCK_BUNDLE_FILENAME}}"
+  feed_lock_dir="${CACHE_ROOT}/feed-locks/${FEED_LOCK_ID}"
+  if [ ! -f "${feed_lock_dir}/.verified" ]; then
+    rm -rf "${feed_lock_dir}"
+    "${ROOT_DIR}/scripts/manage-feed-lock.sh" materialize "${bundle}" "${feed_lock_dir}"
+  fi
+  [ "$(cat "${feed_lock_dir}/.verified" 2>/dev/null)" = "${FEED_LOCK_ID}" ] || {
+    echo "Materialized feed lock ${feed_lock_dir} is not verified." >&2
+    exit 1
+  }
+  # Seed the exact cached indexes/packages and pin the repository list.
+  mkdir -p "${IMAGEBUILDER_DIR}/dl"
+  cp -f "${feed_lock_dir}/dl/"* "${IMAGEBUILDER_DIR}/dl/"
+  cp -f "${feed_lock_dir}/repositories" "${IMAGEBUILDER_DIR}/repositories"
+  echo "Seeded ImageBuilder from pinned feed lock ${FEED_LOCK_ID} (offline mode)."
+fi
+
 packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' \
   "${ROOT_DIR}/configs/official-base.packages" | tr '\n' ' ')"
 
@@ -99,6 +122,16 @@ grep -Eq '^-rw-r--r-- .*squashfs-root/etc/apk/keys/h5000m-plugins.pem$' "${root_
 grep -Eq '^-rwxr-xr-x .*squashfs-root/etc/init.d/uhttpd$' "${root_listing}"
 grep -Eq '^-rwxr-xr-x .*squashfs-root/etc/init.d/miniupnpd$' "${root_listing}"
 grep -Eq '^-rw-r--r-- .*squashfs-root/www/index.html$' "${root_listing}"
+rootfs_plugin_key_sha256="$(
+  unsquashfs -cat "${root_image}" etc/apk/keys/h5000m-plugins.pem |
+    openssl pkey -pubin -pubout -outform DER 2>/dev/null |
+    sha256sum |
+    cut -d' ' -f1
+)"
+[ "${rootfs_plugin_key_sha256}" = "${H5000M_PLUGIN_KEY_SHA256}" ] || {
+  echo "The firmware plugin trust anchor does not match the pinned fingerprint." >&2
+  exit 1
+}
 
 base_defaults="$(unsquashfs -cat "${root_image}" etc/uci-defaults/90-h5000m-base)"
 grep -q "192.168.10.1" <<<"${base_defaults}"
@@ -123,7 +156,7 @@ grep -q '/etc/init.d/ttyd disable' <<<"${base_defaults}"
 required_packages=(
   luci luci-ssl luci-i18n-base-zh-cn luci-app-package-manager
   luci-app-upnp luci-i18n-upnp-zh-cn miniupnpd-nftables
-  dnsmasq curl htop
+  dnsmasq curl htop wpad-openssl
 )
 for package in "${required_packages[@]}"; do
   grep -Eq "^${package}[[:space:]]" "${TEMP_DIR}/installed-package-manifest.txt" || {
@@ -132,9 +165,17 @@ for package in "${required_packages[@]}"; do
   }
 done
 
-forbidden_packages='h5000m-fancontrol|luci-app-h5000m-fancontrol|luci-app-h5000m-netmode|luci-app-mt5700m|luci-app-mt5700m-traffic|dnsmasq-full|kmod-nft-socket|kmod-nft-tproxy|luci-app-passwall|luci-app-passwall2|luci-app-homeproxy|luci-app-mosdns|xray-core|xray-plugin|sing-box|hysteria|hysteria2|tuic-client|naiveproxy|qmodem|ubus-at-daemon|sms-tool_q|at-webserver'
+wpad_provider_regex='wpad|wpad-basic|wpad-basic-[^[:space:]]+|wpad-mini|wpad-mini-[^[:space:]]+|wpad-mbedtls|wpad-wolfssl|wpad-openssl'
+wpad_providers="$(grep -E "^(${wpad_provider_regex})[[:space:]]" \
+  "${TEMP_DIR}/installed-package-manifest.txt" | cut -d' ' -f1 || true)"
+if [ "$(wc -w <<<"${wpad_providers}")" -ne 1 ] || [ "${wpad_providers}" != "wpad-openssl" ]; then
+  echo "The base firmware must contain only wpad-openssl; found: ${wpad_providers:-none}" >&2
+  exit 1
+fi
+
+forbidden_packages='h5000m-fancontrol|luci-app-h5000m-fancontrol[^[:space:]]*|luci-app-h5000m-netmode[^[:space:]]*|luci-app-mt5700m[^[:space:]]*|travelmate|luci-app-travelmate[^[:space:]]*|mwan3|luci-app-mwan3[^[:space:]]*|tailscale|luci-app-tailscale[^[:space:]]*|openconnect|luci-proto-openconnect[^[:space:]]*|vpnc-scripts|lpac|luci-app-epm[^[:space:]]*|dnsmasq-full|kmod-nft-socket|kmod-nft-tproxy|luci-app-passwall[^[:space:]]*|luci-app-homeproxy[^[:space:]]*|luci-app-mosdns[^[:space:]]*|xray-core[^[:space:]]*|xray-plugin[^[:space:]]*|sing-box[^[:space:]]*|hysteria[^[:space:]]*|tuic-client[^[:space:]]*|naiveproxy[^[:space:]]*|qmodem[^[:space:]]*|ubus-at-daemon[^[:space:]]*|sms-tool_q[^[:space:]]*|at-webserver[^[:space:]]*'
 if grep -Eq "^(${forbidden_packages})[[:space:]]" "${TEMP_DIR}/installed-package-manifest.txt"; then
-  echo "A custom or proxy plugin leaked into the official base firmware." >&2
+  echo "A plugin-owned package leaked into the official base firmware." >&2
   grep -E "^(${forbidden_packages})[[:space:]]" "${TEMP_DIR}/installed-package-manifest.txt" >&2
   exit 1
 fi
@@ -160,11 +201,13 @@ grep -Fq "\"version_code\":\"${OPENWRT_REVISION}\"" "${TEMP_DIR}/profiles.json"
   echo "target=${OPENWRT_TARGET}"
   echo "profile=${OPENWRT_PROFILE}"
   echo "architecture=${OPENWRT_ARCH}"
+  echo "plugin_key_sha256=${H5000M_PLUGIN_KEY_SHA256}"
   echo "custom_plugins_included=false"
   echo "passwall2_included=false"
   echo "passwall2_runtime_prerequisites_included=false"
   echo "dnsmasq_variant=compact"
   echo "nft_socket_tproxy_modules_included=false"
+  echo "wpad_provider=wpad-openssl"
   echo "upnp_included=true"
   echo "default_hostname=H5000M"
   echo "default_wifi_ssid=H5000M"
@@ -172,7 +215,12 @@ grep -Fq "\"version_code\":\"${OPENWRT_REVISION}\"" "${TEMP_DIR}/profiles.json"
   echo "default_wifi_enabled=true"
   echo "ssh_password_authentication=true"
 } > "${TEMP_DIR}/BUILD-INFO.txt"
-(cd "${TEMP_DIR}" && sha256sum "$(basename "${sysupgrade}")" > SHA256SUMS)
+(
+  cd "${TEMP_DIR}"
+  find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+    sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+)
 
 rm -rf "${FINAL_DIR}"
 mv "${TEMP_DIR}" "${FINAL_DIR}"
