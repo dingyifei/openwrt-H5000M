@@ -5,13 +5,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../configs/official-base.env
 source "${ROOT_DIR}/configs/official-base.env"
 
+# Rolling mode tracks the live OpenWrt snapshot instead of the committed pin.
+# The snapshot mirror rolls roughly hourly, so a fixed pin is not fetchable for
+# long; rolling mode resolves the current revision/kernel/ABI at build time and
+# still enforces every product invariant below. Off by default (pinned build).
+ROLLING="${OPENWRT_ROLLING:-0}"
+
 CACHE_ROOT="${OPENWRT_LOCAL_CACHE:-${HOME}/.cache/openwrt-H5000M}"
 ARTIFACT_ROOT="${OPENWRT_LOCAL_ARTIFACTS:-${HOME}/artifacts}"
 DOWNLOAD_DIR="${CACHE_ROOT}/downloads"
 IMAGEBUILDER_DIR="${CACHE_ROOT}/imagebuilder/${IMAGEBUILDER_SHA256}"
 ARCHIVE="${DOWNLOAD_DIR}/${IMAGEBUILDER_FILE}"
-FINAL_DIR="${ARTIFACT_ROOT}/H5000M-official-base-${OPENWRT_REVISION}"
-TEMP_DIR="${ARTIFACT_ROOT}/.H5000M-official-base-${OPENWRT_REVISION}.tmp"
 LOCK_FILE="${CACHE_ROOT}/.official-base.lock"
 TARGET_DIR="${IMAGEBUILDER_DIR}/bin/targets/${OPENWRT_TARGET}"
 
@@ -31,6 +35,26 @@ flock -n 9 || {
   exit 1
 }
 
+IMAGEBUILDER_URL="${OPENWRT_BASE_URL}/${IMAGEBUILDER_FILE}"
+
+if [ "${ROLLING}" = 1 ]; then
+  # Track the live snapshot. Always re-fetch: the pinned cache under
+  # IMAGEBUILDER_DIR belongs to a stale revision. Integrity comes from the
+  # mirror's own sha256sums (no silent corruption), not the committed pin.
+  echo "Rolling mode: tracking the live OpenWrt snapshot."
+  expected_sha="$(curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "${OPENWRT_BASE_URL}/sha256sums" \
+    | awk -v f="*${IMAGEBUILDER_FILE}" '$2==f {print $1}')"
+  [ -n "${expected_sha}" ] || {
+    echo "Could not read the ImageBuilder checksum from the snapshot mirror." >&2
+    exit 1
+  }
+  IMAGEBUILDER_SHA256="${expected_sha}"
+  IMAGEBUILDER_DIR="${CACHE_ROOT}/imagebuilder/rolling-${IMAGEBUILDER_SHA256}"
+  ARCHIVE="${DOWNLOAD_DIR}/rolling-${IMAGEBUILDER_FILE}"
+  TARGET_DIR="${IMAGEBUILDER_DIR}/bin/targets/${OPENWRT_TARGET}"
+fi
+
 verify_archive() {
   [ -f "${ARCHIVE}" ] && \
     echo "${IMAGEBUILDER_SHA256}  ${ARCHIVE}" | sha256sum -c - >/dev/null 2>&1
@@ -39,10 +63,21 @@ verify_archive() {
 if ! verify_archive; then
   rm -f "${ARCHIVE}.part"
   curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
-    "${OPENWRT_BASE_URL}/${IMAGEBUILDER_FILE}" \
+    "${IMAGEBUILDER_URL}" \
     -o "${ARCHIVE}.part"
   mv "${ARCHIVE}.part" "${ARCHIVE}"
-  verify_archive
+  if ! verify_archive; then
+    if [ "${ROLLING}" = 1 ]; then
+      echo "ImageBuilder SHA256 ${IMAGEBUILDER_SHA256} did not match the download;" >&2
+      echo "the snapshot mirror likely rolled mid-fetch. Re-run to retry." >&2
+    else
+      echo "ImageBuilder SHA256 does not match the pin ${IMAGEBUILDER_SHA256}." >&2
+      echo "The OpenWrt snapshot mirror has almost certainly rolled past the pinned" >&2
+      echo "revision ${OPENWRT_REVISION}; the pinned archive is no longer downloadable." >&2
+      echo "Use OPENWRT_ROLLING=1 to track the live snapshot, or restore the pinned cache." >&2
+    fi
+    exit 1
+  fi
 fi
 
 if [ ! -f "${IMAGEBUILDER_DIR}/.h5000m-ready" ]; then
@@ -55,10 +90,33 @@ if [ ! -f "${IMAGEBUILDER_DIR}/.h5000m-ready" ]; then
 fi
 
 actual_revision="$(sed -n 's/^REVISION:=//p' "${IMAGEBUILDER_DIR}/include/version.mk" | head -1)"
-[ "${actual_revision}" = "${OPENWRT_REVISION}" ] || {
-  echo "ImageBuilder revision ${actual_revision:-unknown} does not match ${OPENWRT_REVISION}." >&2
+if [ "${ROLLING}" = 1 ]; then
+  # Adopt the live revision + kernel/ABI the builder actually ships.
+  OPENWRT_REVISION="${actual_revision}"
+  kmods_abi="$(grep -oE 'kmods/[0-9.]+-[0-9]+-[0-9a-f]{32}' \
+    "${IMAGEBUILDER_DIR}/repositories" | head -1)"
+  OPENWRT_KERNEL="$(sed -E 's#kmods/([0-9.]+)-[0-9]+-[0-9a-f]{32}#\1#' <<<"${kmods_abi}")"
+  OPENWRT_KERNEL_ABI="$(sed -E 's#kmods/[0-9.]+-[0-9]+-([0-9a-f]{32})#\1#' <<<"${kmods_abi}")"
+  [ -n "${OPENWRT_REVISION}" ] && [ -n "${OPENWRT_KERNEL}" ] && [ -n "${OPENWRT_KERNEL_ABI}" ] || {
+    echo "Could not resolve revision/kernel/ABI from the rolling ImageBuilder." >&2
+    exit 1
+  }
+  echo "Rolling revision ${OPENWRT_REVISION}, kernel ${OPENWRT_KERNEL} (${OPENWRT_KERNEL_ABI})."
+else
+  [ "${actual_revision}" = "${OPENWRT_REVISION}" ] || {
+    echo "ImageBuilder revision ${actual_revision:-unknown} does not match ${OPENWRT_REVISION}." >&2
+    exit 1
+  }
+fi
+
+FINAL_DIR="${ARTIFACT_ROOT}/H5000M-official-base-${OPENWRT_REVISION}"
+TEMP_DIR="${ARTIFACT_ROOT}/.H5000M-official-base-${OPENWRT_REVISION}.tmp"
+
+if [ "${ROLLING}" = 1 ] && [ "${OPENWRT_OFFLINE:-0}" = 1 ]; then
+  echo "OPENWRT_OFFLINE is incompatible with OPENWRT_ROLLING (the pinned feed lock" >&2
+  echo "belongs to the pinned revision, not the live snapshot)." >&2
   exit 1
-}
+fi
 
 # Optional: seed the ImageBuilder's apk cache from the pinned feed-lock bundle so
 # the package closure is reproducible against snapshot mirror rolls. Off by

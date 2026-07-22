@@ -125,7 +125,14 @@ OPENWRT_LOCAL_ARTIFACTS=/home/builder/artifacts \
 
 构建脚本会校验 ImageBuilder 哈希、固件版本、Kernel ABI、LuCI、中文、UPnP、首启默认值、插件公钥指纹和软件包清单；同时确认只有 `wpad-openssl` 一个 wpad provider，主包使用官方精简 `dnsmasq`，且没有混入 Travelmate、mwan3、VPN、eSIM、PassWall2 专用 kmod、代理核心或代理配置。边界检查还会运行脱敏的凭据扫描和对应回归测试。直接构建需要 64 位 Linux，以及 `curl`、`flock`、GNU Make、OpenSSL、`sha256sum`、GNU tar、`unsquashfs` 和 Zstandard 支持。
 
-OpenWrt Snapshot 下载地址和软件源会滚动更新，固定 ImageBuilder 哈希并不足以复现软件包闭包。本项目用 `scripts/manage-feed-lock.sh` 锁定本次构建实际使用的软件源缓存：
+### 滚动模式与固定模式
+
+OpenWrt Snapshot 镜像大约每小时滚动一次，固定 revision 很快就无法再从镜像下载。因此构建有两种模式：
+
+- **固定模式（默认）**：使用 `configs/official-base.env` 中锁定的 revision / ImageBuilder SHA256 / Kernel ABI，可复现同一固件，但前提是镜像仍保留该 revision 或本地已缓存。
+- **滚动模式（`OPENWRT_ROLLING=1`）**：跟随镜像当前 Snapshot，运行时从镜像 `sha256sums` 校验下载完整性，并从 ImageBuilder 自身读取 revision / Kernel / ABI；不追求逐字节复现，但仍强制全部产品不变量（插件公钥指纹、首启默认值、唯一 `wpad-openssl`、禁用插件清单、精简 `dnsmasq`）。GitHub Actions 使用滚动模式，以避开固定 revision 的下载失效问题。滚动模式与 `OPENWRT_OFFLINE` 互斥。
+
+固定模式下，OpenWrt Snapshot 下载地址和软件源会滚动更新，固定 ImageBuilder 哈希并不足以复现软件包闭包。本项目用 `scripts/manage-feed-lock.sh` 锁定本次构建实际使用的软件源缓存：
 
 - `capture IMAGEBUILDER_DIR ARTIFACT_DIR BUNDLE`：校验 ImageBuilder revision、236 包安装清单和 `dl/` 缓存，生成确定性 `tar.zst` bundle，并把有序软件源列表、逐文件哈希、安装清单和整包哈希写入 `configs/official-base.repositories.lock`、`official-base.feeds.sha256`、`official-base.manifest.lock` 和 `official-base.feed.env`。
 - `verify BUNDLE`：对照 `configs/` 中固定的哈希校验 bundle，拒绝篡改、路径穿越和多余/缺失成员，并解包核对每个文件哈希。
@@ -137,7 +144,7 @@ OpenWrt Snapshot 下载地址和软件源会滚动更新，固定 ImageBuilder �
 
 ## GitHub Actions
 
-手动运行“构建 H5000M 官方基础固件”。工作流先执行主包边界检查，再在 GitHub 托管的 `ubuntu-24.04` runner 上调用同一构建脚本，避免维护两套构建逻辑。托管 runner 是原生 x86_64、网络稳定，直接运行 ImageBuilder 宿主工具，无需 Docker 或 Rosetta（容器路径仅用于 Apple Silicon 本地构建）。
+工作流在推送到 master 的 PR 上自动运行，也可手动触发。它先执行主包边界检查，再在 GitHub 托管的 `ubuntu-24.04` runner 上以滚动模式（`OPENWRT_ROLLING=1`）调用同一构建脚本，避免维护两套构建逻辑。托管 runner 是原生 x86_64、网络稳定，直接运行 ImageBuilder 宿主工具，无需 Docker 或 Rosetta（容器路径仅用于 Apple Silicon 本地构建）。滚动模式跟随当前 Snapshot，因此产物 revision 会随镜像变化，但仍强制全部产品不变量。
 
 产物目录包含：
 

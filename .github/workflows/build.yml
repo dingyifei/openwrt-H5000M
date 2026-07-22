@@ -41,6 +41,11 @@ jobs:
 
       - name: 构建并验证基础固件
         env:
+          # Rolling mode: the OpenWrt snapshot mirror rolls ~hourly, so a fixed
+          # pin is not fetchable for long. CI tracks the live snapshot and still
+          # enforces every product invariant (plugin key, wifi defaults, single
+          # wpad-openssl provider, forbidden-package denylist, compact dnsmasq).
+          OPENWRT_ROLLING: "1"
           OPENWRT_LOCAL_CACHE: ${{ runner.temp }}/openwrt-official-cache
           OPENWRT_LOCAL_ARTIFACTS: ${{ github.workspace }}/artifacts
         run: ./scripts/build-official-base-local.sh
