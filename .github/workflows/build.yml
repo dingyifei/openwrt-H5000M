@@ -2,6 +2,8 @@ name: 构建 H5000M 官方基础固件
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: read
