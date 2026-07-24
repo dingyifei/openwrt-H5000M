@@ -56,7 +56,14 @@ Software portion complete and on branch `phase0-base-hardening` (PR #1, CI green
 
 ## Phase 3 — feature packages (each independent, needs mac80211 hardware first)
 - ⬜ **3.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF → `trm_wwan`; idempotent, no baked SSID/PSK.
-- ⬜ **3.2 FM350/lpac/EPM** — lpac 2.3.x (AT+UQMI+MBIM), EPM patch `--fuzz=0`, QModem for FM350-GL. Ship RNDIS+AT; MBIM only via reversible `AT+GTUSBMODE` gate.
+- 🔄 **3.2 FM350/lpac/EPM** — lpac 2.3.x (AT+UQMI+MBIM), EPM patch `--fuzz=0`, QModem for FM350-GL. Ship RNDIS+AT; MBIM only via reversible `AT+GTUSBMODE` gate.
+  - ✅ Field research captured (local, uncommitted): `FM350-GL-SETUP.md` (setup +
+    troubleshooting), `stock-fw-opkg-installed.md` (vendor package inventory),
+    `docs/FM350-GL-{AT-Commands,Hardware-Guide}.pdf`. **Written against ImmortalWrt+QModem
+    (vendor base)** — modem facts port to the plugin work; QModem specifics are reference.
+  - ⭐ **Key data-path fix:** FM350-GL in RNDIS mode only forwards on **PDP context 1**.
+    APN must be on context 1 (`AT+CGDCONT=1,...` + `AT+CGACT=1,1`); QModem `pdp_index=1`.
+    Wrong context → `eth2` tx rises, rx stuck ~2, `NETDEV WATCHDOG` (silent RX drop).
 - ⬜ **3.3 mwan3** — wired(1) → `trm_wwan`(2) → discovered cellular UCI iface(3); no hard-coded `eth2`; `mwan3.user` keeps `tailscale0` out.
 - ⬜ **3.4 Tailscale** — pinned tailscale+kmod-tun+LuCI; ship logged out; `tailscale0` zone; verify OpenWrt/Tailscale/Go/LuCI tuple; measure flash size.
 - ⬜ **3.5 Cisco/OpenConnect** — disabled `cisco` interface; underlay host-route follows mwan3; **auth feasibility gate** (SAML/MFA/cookie) before promising unattended reconnect.
