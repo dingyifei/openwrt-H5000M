@@ -6,5 +6,6 @@
 /codex-thread-data/
 /logs/
 /outputs/
+/stock-fw-configs/
 __pycache__/
 *.log
