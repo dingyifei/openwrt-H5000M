@@ -1,5 +1,54 @@
 # H5000M — hardware & OS behaviors (discovered 2026-07-25)
 
+## ⚠️ Rolling-model rule: kmods are kernel-ABI-locked
+
+Under the rolling model the feeds move with the mirror, so **kmods only load on an image
+built from the same snapshot**. Always record the tuple from `BUILD-INFO.txt` after a build
+and install kmods only from that snapshot:
+
+| field | value (2026-07-26 flash) |
+|---|---|
+| revision | `r35533-3b2bc55dcb` |
+| kernel | `6.18.39` |
+| kernel ABI | `38ca7baf52c71e940d7f3ce0e127bcc9` |
+| arch | `aarch64_cortex-a53` |
+
+This is why the FM350 work needed a reflash first: the device was on r35420 / 6.18.38
+(ABI `45144f66…`), and r35420 kmods no longer exist (snapshots aren't archived).
+
+**Confirmed on the 2026-07-26 sysupgrade:** the Wi-Fi eeprom fix lives in the `factory`
+partition (`mmcblk0p2`), which **sysupgrade does not touch** — after flashing, `eeprom load
+fail` was still absent and the in-memory eeprom still began
+`92 79 00 00 02 73 d9 be 07 c7`. Only the overlay resets. Interface MACs stayed `6a:…`
+because sysupgrade preserved `/etc/config/network`.
+
+## Wi-Fi / forwarding tuning (applied 2026-07-26)
+
+Set in `official-base-files/etc/uci-defaults/90-h5000m-base`, each with a matching
+assertion in `build-official-base-local.sh`.
+
+| Knob | Value | Measured result |
+|---|---|---|
+| `country` | `AU` (was `CN`) | **Disabled 5 GHz channels 16 → 7** — unlocks the DFS band **ch 100–144** that CN blocks. Verified twice: live `iw reg set` A/B before the change, and post-flash. ⚠️ Raises the regulatory *ceiling* only — TX power on this unit is a confirmed no-op, so this buys **channel choice, not output power**. |
+| `tx_burst` | `2.0` | Real mac80211 option → hostapd `tx_queue_data2_burst`. Independent of calibration. |
+| `packet_steering` | `1` | 4-core MT7987; spreads network softirq work. |
+| `flow_offloading` / `_hw` | `1` / `1` | **Active** — `nft list table inet fw4` shows `flowtable ft { flags offload`. The in-tree PPE equivalent of the vendor's MediaTek HNAT/WED (which the official mt76 base cannot reproduce). |
+
+⚠️ **Offloaded flows bypass netfilter**, which can defeat fwmark-based policy routing.
+**Re-validate when mwan3 lands**; if failover misroutes established connections, set both
+flow-offload flags back to `0` — correct failover is worth more than throughput.
+
+> Throughput before/after was **not** measured: the base ships no `iperf3`, and the
+> forwarding path can't be exercised meaningfully with `eth1` unplugged and no cellular
+> uplink yet. Defer the benchmark to after Stage 2 (cellular or WAN present).
+
+## eSIM: lpac AT backend is available
+
+`utils/lpac/Config.in` upstream sets **`LPAC_WITH_AT` `default y`**, so the in-feed `lpac`
+(2.3.0-r2) ships the AT backend — **no source build needed** for eSIM. All four backends
+default `y`, so installing it also pulls `libpcsclite`/`pcscd`/`libmbim`/`uqmi` as deps;
+that is harmless but is **not** a usable MBIM/QMI data path on this modem (see below).
+
 Live investigation on the physical H5000M running our official base
 (root SSH @ 192.168.10.1). Companion to `ROADMAP.md` (Phase 0.4) and the plan file
 `~/.claude/plans/given-phase-0-4-is-ancient-fiddle.md`.
