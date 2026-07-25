@@ -59,46 +59,82 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
     `/dev` nodes. This is the concrete Phase 2/3.2 driver manifest, not a base defect.
 - ✅ Merge PR #1 to master (merged: `912b414`).
 
-## Phase 1 — separate signed plugin build/repository
-- ⛔ Blocked on: a decision to build plugins, and the **matching official SDK**
-  (r-specific GCC 14.4 SDK not preserved locally; online SDK has rolled).
-- ⬜ Create sibling `openwrt-H5000M-plugins` (SDK/feed/source/package locks;
-  fetch-SDK, configure-SDK, build-packages, build-offline-repo, verify-offline-install).
-- ⬜ Reuse only the historical *delivery guarantees* (persistent signing, signed
-  `packages.adb`, offline install sim); never use `--allow-untrusted`.
+> **Re-planned 2026-07-26.** The old Phase 1–5 numbering is retired: Phase 2 turned out to
+> be complete, the pinning model was dropped for rolling, and deep research invalidated the
+> MBIM target. Full plan + evidence:
+> `~/.claude/plans/given-phase-0-4-is-ancient-fiddle.md`.
 
-## Phase 2 — package availability & compatibility gate
-- ⬜ Machine-readable report for travelmate, mwan3, tailscale+kmod-tun, openconnect+
-  luci-proto-openconnect+vpnc-scripts, lpac+luci-app-epm, Tailscale LuCI app, PassWall2.
-  Record source/version/deps/size/arch/signature/license per package.
+## Phase 2 — package availability gate — ✅ DONE
+- ✅ `docs/phase2-package-availability.md`. **Nearly every feature package is already in
+  the official feeds, OpenWrt-signed** — travelmate, mwan3, tailscale + `kmod-tun` +
+  `luci-app-tailscale-community`, openconnect, lpac, and the full FM350 kmod set.
+  Only PassWall2 and `luci-app-epm` would need source builds (both deferred).
+- ⚠️ Two corrections annotated in that file: its "MBIM recommended" verdict is **obsolete**
+  (see below), and the `kmod-usb-net-rndis-host` rename warning appears **mistaken**.
 
-## Phase 3 — feature packages (each independent, needs mac80211 hardware first)
-- ⬜ **3.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF → `trm_wwan`; idempotent, no baked SSID/PSK.
-- 🔄 **3.2 FM350/lpac/EPM** — lpac 2.3.x (AT+UQMI+MBIM), EPM patch `--fuzz=0`, QModem for FM350-GL. Ship RNDIS+AT; MBIM only via reversible `AT+GTUSBMODE` gate.
-  - ✅ Field research captured (committed): `FM350-GL-SETUP.md` (setup +
-    troubleshooting), `stock-fw-opkg-installed.md` (vendor package inventory),
-    `docs/FM350-GL-{AT-Commands,Hardware-Guide}.pdf`. **Written against ImmortalWrt+QModem
-    (vendor base)** — modem facts port to the plugin work; QModem specifics are reference.
-  - ⭐ **Clean-base gap (from 0.4):** on the official base the FM350 has **no driver bound**
-    (RISK-2) — needs kmod-usb-serial-option + a CDC/RNDIS or QMI/MBIM data kmod + uqmi/umbim
-    before any AT/data path exists. This is the first Phase 3.2 build target.
-  - ⭐ **Key data-path fix:** FM350-GL in RNDIS mode only forwards on **PDP context 1**.
-    APN must be on context 1 (`AT+CGDCONT=1,...` + `AT+CGACT=1,1`); QModem `pdp_index=1`.
-    Wrong context → `eth2` tx rises, rx stuck ~2, `NETDEV WATCHDOG` (silent RX drop).
-- ⬜ **3.3 mwan3** — wired(1) → `trm_wwan`(2) → discovered cellular UCI iface(3); no hard-coded `eth2`; `mwan3.user` keeps `tailscale0` out.
-- ⬜ **3.4 Tailscale** — pinned tailscale+kmod-tun+LuCI; ship logged out; `tailscale0` zone; verify OpenWrt/Tailscale/Go/LuCI tuple; measure flash size.
-- ⬜ **3.5 Cisco/OpenConnect** — disabled `cisco` interface; underlay host-route follows mwan3; **auth feasibility gate** (SAML/MFA/cookie) before promising unattended reconnect.
+## Stage 0 — Base tuning + reflash
+- ⬜ Wi-Fi/forwarding defaults in `90-h5000m-base`: `country=AU` (measured: 5 GHz disabled
+  channels 16 → 7, unlocking the DFS band 100–144 that CN blocks), `tx_burst=2.0`,
+  `packet_steering=1`, `flow_offloading{,_hw}=1` — with matching build assertions.
+- ⬜ `OPENWRT_ROLLING=1` build; record revision/kernel/ABI as the **kmod contract**; flash.
+- **Why now:** device is on r35420/kernel 6.18.38 but feeds are 6.18.39+; kmods are
+  ABI-locked, so FM350 drivers from today's feed cannot load until we reflash.
 
-## Phase 4 — six-state egress selector
-- ⬜ **4.1 Routing contract first** — table for `egress{none|proxy|cisco} × tailscale{off|on}`: numeric fwmarks/priorities/tables, DNS owner, IPv6 policy; marks disjoint from mwan3 `0x3F00` / Tailscale `0xff0000`.
-- ⬜ **4.2 Transactional impl** — lock/snapshot/stage/apply-once/probe/commit-or-rollback; LAN mgmt always reachable; no silent mode switching.
+## Stage 1 — Plugin pipeline (the old "Phase 1")
+- ⬜ Implement `configure-sdk` / `build-packages` / `build-offline-repo` /
+  `verify-offline-install` / `check-secrets` in `openwrt-H5000M-plugins` (scaffolded, pushed).
+- **Milestone M1:** `h5000m-travelmate-defaults` built → signed → offline repo → installed
+  into the exact base rootfs with `--network none`, no `--allow-untrusted`, negative
+  controls failing as required.
+- Key findings: the **SDK signs each APK** (unlike the buildbot) so the dev loop needs no
+  `--allow-untrusted`; **`feeds.buildinfo`** pins all feeds per-run, giving rolling
+  determinism; official indexes are ~1.4 MB so we ship them **byte-identical** and let the
+  device verify OpenWrt's own signatures.
 
-## Phase 5 — security, provenance, CI, release gates
-- 🔄 Partially done (secret scan, SHA256SUMS over sidecars, CI). Remaining:
-- ⬜ Extend secret scan to APK contents / rootfs / release sidecars.
-- ⬜ Full provenance record (ImageBuilder/SDK/feed hashes, per-package + external source refs, TLS variant, tuple).
-- ⬜ Signed release provenance via a separate identity (not the APK key).
-- ⬜ Final on-device matrix: 6 selector states × 3 underlays × reboot/WAN-loss/proxy-fail/cisco-fail.
+## Stage 2 — Features (in-feed packages + one small custom package each)
+- ⬜ **2.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF →
+  `trm_wwan`; idempotent, no baked SSID/PSK. Doubles as the M1 proof package.
+- ⬜ **2.2 Tailscale** — `tailscale` + `kmod-tun` + `luci-app-tailscale-community`
+  (the maintained in-feed app); ship logged out; `tailscale0` zone. Flash is a non-issue.
+- 🔄 **2.3 FM350 cellular** — `kmod-usb-serial-option` + `kmod-usb-acm` +
+  `kmod-usb-net-rndis` (+ `464xlat`/`kmod-nat46` for IPv6-only US carriers), plus
+  `h5000m-modem-atd` (serialized AT broker) and `h5000m-fm350` (netifd proto + dialer).
+  - ⛔ **MBIM target DROPPED.** `AT+GTUSBMODE=?` → only `(40,41)`, **both RNDIS**. There is
+    no MBIM/QMI over USB on this modem (MBIM is PCIe-only via `mtk_t7xx`).
+    `umbim`/`uqmi`/`cdc-mbim`/`qmi-wwan` are dead ends here.
+  - ⭐ **Key data-path fix:** RNDIS forwards only on **PDP context 1**
+    (`AT+CGDCONT=1,…` + `AT+CGACT=1,1`). Wrong context → tx rises, rx stuck ~2,
+    `NETDEV WATCHDOG` (silent RX drop).
+  - ⭐ **APN: blank first.** `AT+CGDCONT=1,"IPV4V6",""` requests the subscription default
+    and is self-correcting; a wrong APN silently black-holes traffic. The IMSI table is an
+    optimisation, not the primary path.
+  - ⭐ Never hard-code the netdev or AT port — discover from USB `0e8d:7127`; handle both
+    `ttyUSB` (option) and `ttyACM` (cdc_acm) bindings.
+  - ✅ Field research: `FM350-GL-SETUP.md`, `stock-fw-opkg-installed.md`,
+    `docs/FM350-GL-*.pdf` — written against ImmortalWrt+QModem; modem facts port, QModem
+    specifics are reference only.
+- ⬜ **2.4 eSIM (CLI only)** — in-feed `lpac` over its **AT backend**
+  (`LPAC_WITH_AT` is `default y`, verified). EPM web UI deferred. First test:
+  `lpac chip info` — the vendor image had zero eSIM support, so it is unconfirmed whether
+  this unit even has an eUICC.
+- ⬜ **2.5 mwan3** — wired(1) → `trm_wwan`(2) → discovered cellular iface(3); no hard-coded
+  netdev; `mwan3.user` keeps `tailscale0` out. Track **public IPs**, never the cellular
+  pseudo-gateway (it never answers ICMP). Re-validate flow offloading here — offloaded
+  flows bypass netfilter and can defeat fwmark policy routing.
+
+## Later — deferred, not scheduled
+- ⬜ **OpenConnect/Cisco** — disabled `cisco` interface; **auth feasibility gate**
+  (SAML/MFA/cookie) before promising unattended reconnect.
+- ⬜ **Six-state egress selector** — routing contract first (numeric fwmarks/priorities/
+  tables, DNS owner, IPv6 policy; disjoint from mwan3 `0x3F00` / Tailscale `0xff0000`),
+  then a transactional apply/probe/rollback implementation.
+- ⬜ **PassWall2 / luci-app-epm** — the only two packages needing third-party source builds.
+
+## Security, provenance, CI (continuous)
+- 🔄 Done: secret scan, SHA256SUMS over sidecars, CI, signing-key gate.
+- ⬜ Extend the secret scan to APK contents / rootfs / release sidecars.
+- ⬜ Full provenance record (revision, SDK, feed commits, per-package hashes, key fingerprint).
+- ⬜ Final on-device matrix once the selector exists.
 
 ## Explicit non-goals
 No vendor Wi-Fi driver/cfg80211; no MTK EasyMesh/`.dat`; no MT5700M-specific modem

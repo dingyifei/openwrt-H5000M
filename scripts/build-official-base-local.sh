@@ -204,6 +204,13 @@ grep -q 'key=77778888' <<<"${base_defaults}"
 grep -q 'htmode=EHT40' <<<"${base_defaults}"
 grep -q 'htmode=EHT160' <<<"${base_defaults}"
 grep -q 'encryption=sae-mixed' <<<"${base_defaults}"
+# Wi-Fi/forwarding tuning must stay present; AU unlocks the 5 GHz DFS band that
+# CN blocks (measured: 16 -> 7 disabled 5 GHz channels).
+grep -Fq 'uci -q set "${radio}.country=AU"' <<<"${base_defaults}"
+grep -Fq 'uci -q set "${radio}.tx_burst=2.0"' <<<"${base_defaults}"
+grep -q "packet_steering='1'" <<<"${base_defaults}"
+grep -q "flow_offloading='1'" <<<"${base_defaults}"
+grep -q "flow_offloading_hw='1'" <<<"${base_defaults}"
 grep -Fq 'uci -q set "${radio}.disabled=0"' <<<"${base_defaults}"
 grep -Fq 'uci -q set "${iface}.disabled=0"' <<<"${base_defaults}"
 grep -Fq 'uci -q delete "${iface}.bss_transition"' <<<"${base_defaults}"

@@ -72,7 +72,23 @@ All kmods below are in the **target kmods feed** at kernel `6.18.38-r1`, license
 
 **All kernel + userspace pieces needed to bring up the FM350-GL over USB are present in the official r35420 feeds — nothing kmod-side needs a source build.**
 
-- **MBIM path (recommended for FM350):** `kmod-usb-net-cdc-mbim` + `umbim` (or `modemmanager`+`libmbim`) — ✅ all available.
+> ## ⛔ CORRECTION (2026-07-26) — the MBIM/QMI verdicts below are OBSOLETE
+>
+> This report was written **before** the `AT+GTUSBMODE` constraint was known. On the real
+> device `AT+GTUSBMODE=?` returns **only `(40,41)` — and both are RNDIS**. FM350-GL
+> firmware exposes **no MBIM and no QMI over USB**; MBIM exists only over **PCIe** via
+> `mtk_t7xx`, and this board wires the modem over USB (`0e8d:7127`).
+>
+> Therefore, **for this device**: `kmod-usb-net-cdc-mbim`, `umbim`,
+> `kmod-usb-net-qmi-wwan`, `uqmi` and `modemmanager` are **dead ends**. The packages are
+> genuinely available in the feed — they just cannot carry data on this hardware.
+>
+> **The actual stack is:** `kmod-usb-serial-option` (AT control) + `kmod-usb-net-rndis`
+> (data) + `kmod-usb-acm` (the interfaces are CDC-ACM class, so `cdc_acm` may claim them
+> instead of `option` on a stock kernel — ship both and probe at runtime).
+> eSIM still works: lpac drives the eUICC over its **AT** backend.
+
+- ~~**MBIM path (recommended for FM350):**~~ **NOT VIABLE — see correction above.** `kmod-usb-net-cdc-mbim` + `umbim` (or `modemmanager`+`libmbim`) are in the feed but unusable on this modem.
 - **QMI path (alt):** `kmod-usb-net-qmi-wwan` + `uqmi` (or `modemmanager`+`libqmi`) — ✅ all available.
 - **AT/serial + NCM fallback:** `kmod-usb-serial-option`, `comgt`/`comgt-ncm`, `kmod-usb-net-huawei-cdc-ncm` — ✅ available.
 - **RNDIS/ECM:** `kmod-usb-net-rndis` (⚠ named `kmod-usb-net-rndis-host` on the live rolled snapshot — pin against r35420 or update the package name in build lists), `kmod-usb-net-cdc-ether` — ✅ available.
@@ -98,6 +114,6 @@ Everything else in the Phase-2 request (travelmate, mwan3, tailscale, openconnec
 
 ## Data-quality notes
 
-- r35420 vs live rolled snapshot: everything above is **r35420** (the pinned base). The only known drift observed is the `kmod-usb-net-rndis` → `kmod-usb-net-rndis-host` rename on the live snapshot. Version strings will also have advanced on live (e.g., kmod release bumps `-r1`→`-r2+`).
+- r35420 vs live rolled snapshot: everything above is **r35420** (the pinned base). ~~The only known drift observed is the `kmod-usb-net-rndis` → `kmod-usb-net-rndis-host` rename on the live snapshot.~~ **CORRECTION (2026-07-26): the rename appears to be mistaken.** Upstream `package/kernel/linux/modules/usb.mk` on `main` still defines `KernelPackage/usb-net-rndis` (i.e. `kmod-usb-net-rndis`), with `DEPENDS:= +kmod-usb-net-cdc-ether`. Dependency resolution makes the distinction moot in any case. Version strings will still have advanced on live (e.g., kmod release bumps `-r1`→`-r2+`).
 - `[idx]` versions are byte-exact from the pinned ADB index; `[src]` versions are from the master source tree (presence is index-confirmed, only the exact `-rN` wasn't cleanly extractable from the binary record).
 - Installed sizes are estimates; **tailscale (~30 MB) is the one to watch** for flash budget. Everything else is tens-to-low-hundreds of KB except `modemmanager` (~2–3 MB with glib2/dbus).

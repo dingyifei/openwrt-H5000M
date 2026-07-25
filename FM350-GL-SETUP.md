@@ -89,12 +89,38 @@ tom_modem -d /dev/ttyUSB1 -c "AT+COPS?"    -t 4    # want: an operator name, e.g
 **Carrier by IMSI prefix (`AT+CIMI` first 5 digits):**
 | Prefix | Carrier | Internet APN |
 |---|---|---|
-| 46011, 46003, 46012 | China Telecom (中国电信) | **`ctnet`** |
+| 46003, 46005, 46011 | China Telecom (中国电信) | **`ctnet`** |
 | 46000/02/04/07/08 | China Mobile (中国移动) | `cmnet` |
 | 46001/06/09 | China Unicom (中国联通) | `3gnet` |
+| 46015 | China Broadnet (中国广电) | `cbnet` |
+
+> **Corrections (2026-07-26, sourced from AOSP `apns-full-conf.xml` + ITU-T E.212B):**
+> - **`46012` was removed — it is not an allocated MNC.** It propagates through copied
+>   APN lists online; it is absent from ITU E.212B (2023), the Wikipedia MCC-460 table,
+>   and AOSP.
+> - **46005 added** (China Telecom, ex-CDMA) and **46015 / `cbnet` added** — China
+>   Broadnet is a live 4th operator that was missing entirely.
+> - Auth is `none` for **every** Chinese carrier. ⚠️ The GNOME
+>   `mobile-broadband-provider-info` database is **wrong** here — it still lists
+>   CDMA/EVDO-era credentials (`guest`/`guest`, `uninet`, `ctnet@mycdma.cn`). CDMA2000
+>   shut down in Dec 2023. Do not copy them.
 
 > ⚠️ Do NOT reuse an APN from a different carrier's SIM. This build shipped with APN
-> `scuiot` (a China Mobile IoT APN) which is wrong for a China Telecom SIM.
+> `scuiot` — **a China *Unicom* (Sichuan) IoT APN**, not a China Mobile one as previously
+> stated here — which is wrong for a China Telecom SIM.
+>
+> **IoT APNs never to use on a consumer SIM:** `cmiot` (Mobile), `cuiot` / `scuiot` /
+> `unim2m.*` (Unicom, province-specific), `ctiot` (Telecom). Chinese IoT SIMs broadcast
+> the **same MCC-MNC as consumer SIMs**, so an IMSI-prefix table structurally cannot tell
+> them apart — it will confidently apply `cmnet`/`3gnet`/`ctnet` and the SIM will register
+> but pass no traffic.
+>
+> **Prefer a blank APN over this table.** `AT+CGDCONT=1,"IPV4V6",""` requests the
+> subscription default (TS 27.007 §10.1.1) and is self-correcting across every carrier,
+> MVNO and travel eSIM. A *wrong* APN yields ESM cause #27 or attaches to the wrong PGW
+> and silently black-holes traffic while still reporting `+CEREG: 0,1`. Use this table
+> only as an optimisation after a blank attach, and never fall back to a guessed
+> "common default" like `internet`.
 
 ---
 

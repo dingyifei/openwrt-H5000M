@@ -39,7 +39,17 @@ fi
 if [ -f /etc/config/wireless ]; then
 	for radio in $(uci -q show wireless | sed -n 's/^\(wireless\.[^.]*\)=wifi-device$/\1/p'); do
 		band="$(uci -q get "${radio}.band")"
-		uci -q set "${radio}.country=CN"
+		# AU unlocks the 5 GHz DFS band (channels 100-144) that CN blocks: measured
+		# on-device, disabled 5 GHz channels drop from 16 to 7. Note this raises the
+		# regulatory *ceiling* only - this unit's TX power is a confirmed no-op
+		# (blank factory partition, no calibration), so expect channel choice to
+		# improve, not output power. Operating region compliance is the operator's
+		# responsibility.
+		uci -q set "${radio}.country=AU"
+		# WMM/EDCA TXOP burst (ms) for the best-effort queue -> hostapd
+		# tx_queue_data2_burst. Independent of calibration, so this one can help
+		# aggregate airtime efficiency.
+		uci -q set "${radio}.tx_burst=2.0"
 		uci -q set "${radio}.disabled=0"
 		case "${band}" in
 			2g)
@@ -67,11 +77,29 @@ if [ -f /etc/config/wireless ]; then
 	done
 fi
 
+# Forwarding performance. The vendor image reached its throughput through the
+# MediaTek HNAT/WED offload, which the official mt76/mac80211 base cannot
+# reproduce; these are the in-tree equivalents.
+#
+# packet_steering spreads network softirq work across the MT7987's 4 cores.
+uci -q set network.globals.packet_steering='1'
+
+# Flowtable offload (software + in-tree PPE hardware path).
+# CAUTION: offloaded flows bypass netfilter, which can defeat fwmark-based
+# policy routing. Re-validate this when mwan3 lands; if failover misroutes
+# established connections, set both back to '0' - throughput is worth less
+# than correct failover.
+if [ -f /etc/config/firewall ]; then
+	uci -q set firewall.@defaults[0].flow_offloading='1'
+	uci -q set firewall.@defaults[0].flow_offloading_hw='1'
+fi
+
 uci -q commit system
 uci -q commit luci
 uci -q commit network
 uci -q commit uhttpd
 uci -q commit dropbear
 uci -q commit wireless
+uci -q commit firewall
 
 exit 0
