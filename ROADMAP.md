@@ -17,7 +17,8 @@ APK plugins from a sibling `openwrt-H5000M-plugins` repo. Do not port vendor
 ---
 
 ## Phase 0 — freeze and prove the base
-Software portion complete and on branch `phase0-base-hardening` (PR #1, CI green).
+Complete. Software merged to master (PR #1, `912b414`, CI green) and the hardware
+baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
 
 - ✅ **0.1 Baseline hardening** — `wpad-basic-mbedtls` → `wpad-openssl` (single-provider
   assertion); feature-plugin denylist widened; boundary check + secret scanner + tests.
@@ -29,17 +30,34 @@ Software portion complete and on branch `phase0-base-hardening` (PR #1, CI green
   ECDSA P-256 (`ccb879ec…`); pinned fingerprint enforced; `scripts/check-plugin-signing-key.sh`.
   - ⬜ Back up `~/.config/h5000m-apk/private-key.pem` off-machine (only copy the firmware trusts).
   - ⬜ Decide: upload signing key to GitHub Secrets (`H5000M_APK_SIGNING_KEY`) — deferred until plugins exist.
-- 🔄 **0.4 Hardware baseline gate** — needs the physical H5000M.
+- ✅ **0.4 Hardware baseline gate** — verified live 2026-07-25 (root SSH @ 192.168.10.1,
+  base = SNAPSHOT r35420-06c826e335, kernel 6.18.38, aarch64, apk).
   - ✅ Stock firmware config dumped (`stock-fw-configs/`, gitignored — contains
     `shadow`/`passwd`/`uhttpd.key`; **never commit**). Real vendor stack captured:
     qmodem, mosdns, openclash, gwswitch, mtkhqos, eqos/appfilter, fancontrol,
     sms_forwarder. Mine it for FM350/modem facts (Phase 0.4/2) and the vendor
     feature set — but the target base is clean official mt76, not this vendor image.
-  - ⬜ Flash the official base + recovery path; verify mt76/RF/regdb/throughput/thermals.
-  - ⬜ Confirm `eth1` WAN, partition ceiling; capture FM350-GL facts (USB id, AT
-    port, UCI iface name, RNDIS device, `AT+GTUSBMODE?`) from the dump + live device.
-  - **Stop-the-line:** if mt76 RF/throughput is unacceptable, reassess the whole approach.
-- ⬜ Merge PR #1 to master.
+  - ✅ mt76 RF up: chip **MT7996e/MT7992** (filogic WiFi7), dual-band AP (2.4 ch1 +
+    5 ch36 @ 160 MHz), regdomain CN, cpu-thermal 43 °C idle. **Stop-the-line cleared.**
+  - ✅ `eth1` = WAN (dhcp/dhcpv6); `eth0`→`br-lan` LAN. Storage: eMMC GPT, `/overlay`
+    f2fs **7.2 GB / ~7 GB free** → partition ceiling is a non-issue.
+  - ✅ FM350-GL facts: USB `0e8d:7127`, 10-iface CDC-ACM+data (RNDIS/ECM+AT) composite,
+    config 1 (~GTUSBMODE 41). See FM350-GL-SETUP.md + RISK-2 below.
+  - ⚠️ **RISK-1 (Wi-Fi):** device shipped **uncalibrated** — `factory` partition
+    (`mmcblk0p2`) was all-zero, so `mt7996e … eeprom load fail, use default bin`.
+    Confirmed NOT caused by our flash (stock HiGoROS is a sysupgrade tar with the same
+    blank-factory DT wiring → stock ran default-bin too; stock u-boot has no MAC either).
+    Interface MACs are **stable across reboots** (persisted in `/overlay .../network`,
+    arbitrary `6a:…`), not random-per-boot. **Action taken (reversible):** wrote a valid
+    2i5i eeprom + deterministic MAC `02:73:d9:be:07:c7` to `factory` → `eeprom load fail`
+    now gone (calibration provisioned); note OpenWrt still derives interface MACs from the
+    eth base, not the eeprom. RF-power vs TXpower found flat (see
+    `docs/H5000M-hardware-notes.md`). Follow-up: vendor golden eeprom + MAC scheme;
+    true RF cal infeasible DIY. See plan WS-R1 + `docs/H5000M-hardware-notes.md`.
+  - ⚠️ **RISK-2 (modem):** FM350 enumerates but the clean base ships **no modem kmods**
+    (no option/cdc_ether/rndis/qmi_wwan/cdc_mbim, no uqmi/umbim/comgt/QModem) → zero
+    `/dev` nodes. This is the concrete Phase 2/3.2 driver manifest, not a base defect.
+- ✅ Merge PR #1 to master (merged: `912b414`).
 
 ## Phase 1 — separate signed plugin build/repository
 - ⛔ Blocked on: a decision to build plugins, and the **matching official SDK**
@@ -57,10 +75,13 @@ Software portion complete and on branch `phase0-base-hardening` (PR #1, CI green
 ## Phase 3 — feature packages (each independent, needs mac80211 hardware first)
 - ⬜ **3.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF → `trm_wwan`; idempotent, no baked SSID/PSK.
 - 🔄 **3.2 FM350/lpac/EPM** — lpac 2.3.x (AT+UQMI+MBIM), EPM patch `--fuzz=0`, QModem for FM350-GL. Ship RNDIS+AT; MBIM only via reversible `AT+GTUSBMODE` gate.
-  - ✅ Field research captured (local, uncommitted): `FM350-GL-SETUP.md` (setup +
+  - ✅ Field research captured (committed): `FM350-GL-SETUP.md` (setup +
     troubleshooting), `stock-fw-opkg-installed.md` (vendor package inventory),
     `docs/FM350-GL-{AT-Commands,Hardware-Guide}.pdf`. **Written against ImmortalWrt+QModem
     (vendor base)** — modem facts port to the plugin work; QModem specifics are reference.
+  - ⭐ **Clean-base gap (from 0.4):** on the official base the FM350 has **no driver bound**
+    (RISK-2) — needs kmod-usb-serial-option + a CDC/RNDIS or QMI/MBIM data kmod + uqmi/umbim
+    before any AT/data path exists. This is the first Phase 3.2 build target.
   - ⭐ **Key data-path fix:** FM350-GL in RNDIS mode only forwards on **PDP context 1**.
     APN must be on context 1 (`AT+CGDCONT=1,...` + `AT+CGACT=1,1`); QModem `pdp_index=1`.
     Wrong context → `eth2` tx rises, rx stuck ~2, `NETDEV WATCHDOG` (silent RX drop).
