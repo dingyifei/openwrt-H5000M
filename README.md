@@ -129,8 +129,8 @@ OPENWRT_LOCAL_ARTIFACTS=/home/builder/artifacts \
 
 OpenWrt Snapshot 镜像大约每小时滚动一次，固定 revision 很快就无法再从镜像下载。因此构建有两种模式：
 
-- **固定模式（默认）**：使用 `configs/official-base.env` 中锁定的 revision / ImageBuilder SHA256 / Kernel ABI，可复现同一固件，但前提是镜像仍保留该 revision 或本地已缓存。
-- **滚动模式（`OPENWRT_ROLLING=1`）**：跟随镜像当前 Snapshot，运行时从镜像 `sha256sums` 校验下载完整性，并从 ImageBuilder 自身读取 revision / Kernel / ABI；不追求逐字节复现，但仍强制全部产品不变量（插件公钥指纹、首启默认值、唯一 `wpad-openssl`、禁用插件清单、精简 `dnsmasq`）。GitHub Actions 使用滚动模式，以避开固定 revision 的下载失效问题。滚动模式与 `OPENWRT_OFFLINE` 互斥。
+- **滚动模式（默认，`OPENWRT_ROLLING=1`）**：跟随镜像当前 Snapshot，运行时从镜像 `sha256sums` 校验下载完整性，并从 ImageBuilder 自身读取 revision / Kernel / ABI；不追求逐字节复现，但仍强制全部产品不变量（插件公钥指纹、首启默认值、唯一 `wpad-openssl`、禁用插件清单、精简 `dnsmasq`）。GitHub Actions 亦使用滚动模式。滚动模式与 `OPENWRT_OFFLINE` 互斥。**本项目不自编译内核模块，无需为匹配 ABI 而冻结某一 Snapshot；插件仓库（`../openwrt-H5000M-plugins`）同样采用滚动，须与基础镜像在同一次构建中取自同一 Snapshot。**
+- **固定模式（可选，`OPENWRT_ROLLING=0`）**：使用 `configs/official-base.env` 中锁定的 revision / ImageBuilder SHA256 / Kernel ABI，配合 `OPENWRT_OFFLINE=1` 可从提交的 feed-lock 逐字节复现同一固件，但前提是镜像仍保留该 revision 或本地已缓存。committed 的 lock 仅作为可复现回退保留。
 
 固定模式下，OpenWrt Snapshot 下载地址和软件源会滚动更新，固定 ImageBuilder 哈希并不足以复现软件包闭包。本项目用 `scripts/manage-feed-lock.sh` 锁定本次构建实际使用的软件源缓存：
 
@@ -140,7 +140,7 @@ OpenWrt Snapshot 镜像大约每小时滚动一次，固定 revision 很快就�
 
 边界检查会验证 `configs/official-base.feed.env` 的身份格式，并确认三份 lock 文件与其中固定的哈希一致。设置 `OPENWRT_OFFLINE=1` 后，构建会 `materialize` 该 bundle、把精确缓存与软件源列表注入 ImageBuilder，并在断网容器中复现固件——已验证与联网构建逐字节一致（`sysupgrade.bin` SHA256 相同）。默认仍为联网模式；离线模式需要预先保全 hash 固定的 ImageBuilder 归档和 feed-lock bundle。
 
-另外，`r35420-06c826e335` 对应的官方 SDK 未在本地保留，而 OpenWrt 在线 Snapshot SDK 已滚动到其他 revision。因此在恢复匹配 SDK 或整体更新并同时锁定 ImageBuilder、SDK 和 feeds 之前，不能发布与本基线声称 ABI/工具链匹配的自编译插件。
+插件工具链（SDK）亦采用滚动：`../openwrt-H5000M-plugins` 在构建时从在线镜像拉取当前 SDK 并按镜像 `sha256sums` 校验，不再冻结/离线保全某一 revision 的 SDK。唯一要求是基础镜像与插件在同一次构建中取自同一 Snapshot（内核模块 ABI 一致；本项目不自编译 kmod，风险很小）。
 
 ## GitHub Actions
 

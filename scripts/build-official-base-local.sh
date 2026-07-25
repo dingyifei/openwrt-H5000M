@@ -8,8 +8,10 @@ source "${ROOT_DIR}/configs/official-base.env"
 # Rolling mode tracks the live OpenWrt snapshot instead of the committed pin.
 # The snapshot mirror rolls roughly hourly, so a fixed pin is not fetchable for
 # long; rolling mode resolves the current revision/kernel/ABI at build time and
-# still enforces every product invariant below. Off by default (pinned build).
-ROLLING="${OPENWRT_ROLLING:-0}"
+# still enforces every product invariant below. ON by default (this project builds
+# no custom kmods, so a frozen ABI-matched pin is unnecessary); set OPENWRT_ROLLING=0
+# with OPENWRT_OFFLINE=1 for a pinned byte-identical rebuild from the committed lock.
+ROLLING="${OPENWRT_ROLLING:-1}"
 
 CACHE_ROOT="${OPENWRT_LOCAL_CACHE:-${HOME}/.cache/openwrt-H5000M}"
 ARTIFACT_ROOT="${OPENWRT_LOCAL_ARTIFACTS:-${HOME}/artifacts}"
