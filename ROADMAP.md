@@ -100,13 +100,33 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
   See `../openwrt-H5000M-plugins/docs/apk-tooling-findings.md`.
 
 ## Stage 2 — Features (in-feed packages + one small custom package each)
-- ⬜ **2.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF →
-  `trm_wwan`; idempotent, no baked SSID/PSK. Doubles as the M1 proof package.
-- ⬜ **2.2 Tailscale** — `tailscale` + `kmod-tun` + `luci-app-tailscale-community`
+
+> **Re-planned 2026-07-26 → modem-first order (2.3 → 2.4 → 2.1 → 2.2 → 2.5).** The FM350 is
+> the only substantial engineering and its kmods are ABI-locked to the flashed snapshot.
+> All six custom packages are now written; see `docs/H5000M-hardware-notes.md`
+> §"FM350 on the clean base" for what was measured rather than assumed.
+
+- 🔄 **2.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF →
+  `trm_wwan`; idempotent, no baked SSID/PSK. **Stub replaced with real logic and verified
+  on device**: generic radio discovery, exactly one STA VIF, AP sections preserved,
+  `fw4 check` clean, config stable across three consecutive runs.
+- 🔄 **2.2 Tailscale** — `tailscale` + `kmod-tun` + `luci-app-tailscale-community`
   (the maintained in-feed app); ship logged out; `tailscale0` zone. Flash is a non-issue.
-- 🔄 **2.3 FM350 cellular** — `kmod-usb-serial-option` + `kmod-usb-acm` +
-  `kmod-usb-net-rndis` (+ `464xlat`/`kmod-nat46` for IPv6-only US carriers), plus
-  `h5000m-modem-atd` (serialized AT broker) and `h5000m-fm350` (netifd proto + dialer).
+  Zone + both forwardings created and verified idempotent on device.
+- 🔄 **2.3 FM350 cellular** — `kmod-usb-serial-option` + `kmod-usb-net-rndis`
+  (+ `464xlat`/`kmod-nat46` for IPv6-only US carriers), plus
+  `h5000m-modem-atd` (AT broker) and `h5000m-fm350` (netifd proto + dialer).
+  - ✅ **Driver stack proven on hardware.** kmods installed from the official feed →
+    exactly **7 `ttyUSB` nodes + `eth2`**, matching the `option.c` interface filter.
+  - ⛔ **`kmod-usb-acm` DROPPED** — there is no CDC-ACM-class interface on this modem, so
+    the C4 dual-binding concern does not apply.
+  - ⭐ **Only ONE AT port exists** (interface 6 = `ttyUSB3`); the vendor's second port
+    (`ttyUSB1`) is silent. **C5 is falsified** and the two-tier broker is replaced by a
+    single port with per-transaction locking (dialer is a peer, not an owner).
+  - ⭐ **`AT+EIAAPN` and `AT+CGAUTH` are unsupported** on this firmware → `AT+CGDCONT=1`
+    is the only APN lever (settles C17); `auth` can only ever be `none` (confirms C13).
+  - ⛔ **e2e attach is BLOCKED by the SIM, not the code**: `+CEREG: 0,3` registration
+    denied, both automatically and when forced. Needs a different SIM.
   - ⛔ **MBIM target DROPPED.** `AT+GTUSBMODE=?` → only `(40,41)`, **both RNDIS**. There is
     no MBIM/QMI over USB on this modem (MBIM is PCIe-only via `mtk_t7xx`).
     `umbim`/`uqmi`/`cdc-mbim`/`qmi-wwan` are dead ends here.

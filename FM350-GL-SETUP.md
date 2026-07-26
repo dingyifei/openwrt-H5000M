@@ -376,3 +376,56 @@ tom_modem -d /dev/ttyUSB1 -c "AT+GTUSBMODE?"  -t 4   # 41 = RNDIS (expected)
 **Firmware/unlock note:** Do not attempt to reflash the modem to get MBIM/QMI over USB —
 it does not exist for the FM350-GL (verified via the AT manual and community sources).
 RNDIS (context 1) is the correct and only USB data path. Reflashing only risks bricking.
+
+---
+
+# 10. Clean-base stack (official mt76 OpenWrt) — NOT QModem
+
+Everything above targets ImmortalWrt 24.10 + QModem. This section describes the stack this
+project actually ships on the clean official base. **The modem facts carry over; the
+tooling does not.** In particular `eth2`, `ttyUSB1` and `ttyUSB3` appear above as literal
+names — on the clean base nothing may hard-code them, because they renumber.
+
+## Packages
+
+`kmod-usb-serial-option` + `kmod-usb-net-rndis` from the official feed (**not**
+`kmod-usb-acm` — this modem has no CDC-ACM-class interface), plus `464xlat` + `kmod-nat46`
+for IPv6-only carriers, and `coreutils-stty` because busybox has no `stty`. Custom glue:
+`h5000m-modem-atd` (AT broker) and `h5000m-fm350` (netifd proto + dialer).
+
+## Port layout (measured, firmware 81600.0000.00.29.21.24)
+
+`option` binds the seven `ff/00/00` interfaces → `ttyUSB0..6`; `rndis_host` binds If#0/1 →
+one RNDIS netdev. **Only interface 6 (`ttyUSB3` on this boot) answers AT** — the other six
+are silent to commands and passively, with or without DTR. The vendor's claim that
+`ttyUSB1` is also an AT port does not hold here.
+
+Discovery therefore walks sysfs for `0e8d:7127`, probes candidates in the order
+`6 3 7 8 9 4 2`, and publishes `/dev/modem-at0` / `/dev/modem-at1`. Locks are keyed on the
+stable USB path (`2-1`) plus interface number, never on the tty name.
+
+## Using it
+
+```sh
+modem-ports                 # show discovered ports and the data netdev
+modem-ports --rescan        # re-probe (~1s; MODEM_DEEP_SCAN=1 probes all ports, ~26s)
+atq 'AT+CSQ'                # one-shot AT on the leased port
+at-lease lpac chip info     # hand the port to a foreign tool for its whole lifetime
+```
+
+`atq` refuses `AT+COPS=?` (measured: blocks the single AT port for **71 s**), and
+`AT+CFUN=` / `AT+CGDCONT=1,` (dialer-owned state).
+
+## Bring-up differences vs the QModem recipe
+
+- The APN is programmed on **context 1** exactly as above — that constraint is real and
+  unchanged — but the default is **blank**, not `ctnet`. Blank requests the subscription
+  default and is self-correcting; the IMSI table is only consulted after blank has failed.
+- `AT+EIAAPN` and `AT+CGAUTH` **do not exist on this firmware** (both return `+CME ERROR`),
+  so there is no initial-EPS-bearer APN knob and `auth` can only ever be `none`.
+- The interface is brought up by netifd via the custom `fm350` proto, giving the stable UCI
+  name `cellular`. Address changes are re-published, never re-dialed, and `proto_set_keep`
+  is never set — with it, netifd would leave the stale address attached and the uplink
+  would die silently.
+- **The modem keeps its APN in its own NVRAM across a router reflash.** A clean image does
+  not imply a clean modem: context 1 still held the vendor's `ctnet` on our fresh base.

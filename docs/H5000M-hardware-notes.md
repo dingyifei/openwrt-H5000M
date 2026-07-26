@@ -189,6 +189,76 @@ router TXpower swept 3→23 dBm.
   modem-side needs a source build. Drift: r35420 `kmod-usb-net-rndis` was renamed
   `kmod-usb-net-rndis-host` in the rolled snapshot.
 
+### FM350 on the clean base — measured 2026-07-26 (Stage 2.3)
+
+Kmods installed from the official kmods feed for ABI `38ca7baf…`; everything below was
+read off the running device, not inferred.
+
+**USB composition (`0e8d:7127`, GTUSBMODE 41).** Ten interfaces:
+
+| If# | Class/Sub/Proto | Bound by | Result |
+|---|---|---|---|
+| 0 | `02/02/ff` | `rndis_host` | RNDIS control |
+| 1 | `0a/00/00` | `rndis_host` | RNDIS data → **`eth2`** |
+| 5 | `ff/42/01` | (none) | ADB — never an AT candidate |
+| 2,3,4,6,7,8,9 | `ff/00/00` | `option` | **`ttyUSB0..6`** |
+
+`option` claims it explicitly — Linux 6.18 `option.c`:
+`USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x7127, 0xff, 0x00, 0x00)` with
+`.driver_info = NCTRL(2)|NCTRL(3)|NCTRL(4)`. **No `new_id` hack is needed**, and there is
+**no CDC-ACM-class interface at all**, so `kmod-usb-acm` was dropped from the package set.
+
+> ⭐ **Only ONE AT port exists.** Contrary to the vendor docs (which list `ttyUSB1` *and*
+> `ttyUSB3`), only **interface 6 = `/dev/ttyUSB3`** answers AT. The other six are silent
+> to `AT`/`ATI` and emit nothing passively, with or without DTR asserted. This **kills the
+> planned two-tier broker** (one port owned by the dialer, one leased to everyone else).
+> The shipped design is instead a single port with strict per-transaction locking: the
+> dialer is a peer, not an owner. Consequence: URCs arriving while another consumer holds
+> the port are missed, so dialer state is **poll-authoritative** and URCs are an
+> optimisation only. Re-check with `MODEM_DEEP_SCAN=1 modem-ports --rescan` on new firmware.
+
+**Writing to a dead serial port blocks `close()` for ~30 s**, and `SIGTERM` does *not*
+interrupt it — `timeout(1)` cannot rescue you. Open and read are instant; the entire cost
+is in close. A naive probe sweep of all seven ports therefore took **55 s**. The fix is to
+stop at the first working port (the interface-6 prior is correct) and to run probes
+detached, judging them by whether output appeared rather than by process exit. Discovery
+is now **~1 s**; an explicit deep scan is ~26 s.
+
+**busybox `flock` has no `-w`** (only `-s -x -u -n`). Using `-w` silently turns every
+acquisition into a usage error that reads as "AT port busy". Bounded waits must be built
+from `-n` plus a retry loop.
+
+**Firmware `81600.0000.00.29.21.24` command support** — verified, not assumed:
+
+| Command | Result | Consequence |
+|---|---|---|
+| `AT+EIAAPN` | `+CME ERROR` | **No separate initial-EPS-bearer APN knob.** `AT+CGDCONT=1` is the only APN lever here, settling the open C17 question for this unit. |
+| `AT+CGAUTH` | `+CME ERROR` | Confirms C13 on hardware: PAP/CHAP is not expressible; `auth` must be `none`. |
+| `AT+GTDNS=?` | `OK` | Supported, but `AT+CGCONTRDP` is still preferred (standard, and returns APN + mask + gateway + both DNS at once). |
+| `AT+COPS=?` | `OK`, **71 s** | Justifies the denylist — it blocks the single AT port for over a minute. |
+
+**The modem keeps its own APN in NVRAM across a router reflash.** PDP context 1 still held
+the vendor's `ctnet` even on our clean base. Do not assume a fresh image means a fresh
+modem.
+
+> ⛔ **The SIM currently fitted is refused by the network** (IMSI `46008…`, China Mobile).
+> `AT+CPIN: READY`, `AT+CSQ: 11` (≈ −91 dBm), and `AT+COPS=?` lists China Mobile/Telecom/
+> Broadnet as *available* — yet attach fails with **`+CEREG: 0,3` (registration denied)**,
+> both automatically and when forced with `AT+COPS=1,2,"46000"`. Blank-APN programming
+> itself works exactly as designed (`+CGDCONT: 1,"IPV4V6",""` accepted). This is a
+> **subscription problem, not a firmware or code problem** — the e2e attach gate needs a
+> different SIM.
+
+**netifd loads new protocol handlers only on `restart`, not `reload`.** After dropping in
+`/lib/netifd/proto/fm350.sh`, `ubus call network.interface.cellular status` reported
+`"proto": "none"` until a full `/etc/init.d/network restart`. Harmless at first boot
+(uci-defaults run before netifd), but it must be done by hand after a runtime install.
+
+**Do not use `set -u` in a netifd proto command.** OpenWrt's own `/lib/functions.sh`
+dereferences `$IPKG_INSTROOT` while unset, so the script dies the instant it is sourced —
+and because netifd respawns a proto command that exits, the result is an immediate restart
+storm (measured: dozens of respawns per second).
+
 ## macOS Wi-Fi measurement tooling notes
 - Legacy `airport` tool is **removed** (recent macOS). `wdutil info` needs sudo.
 - `system_profiler SPAirPortDataType` gives associated **Signal/Noise (RSSI)** without sudo.

@@ -4,6 +4,12 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [master]
+  # Build on every push to master too. Under the rolling model the snapshot moves
+  # continuously, so "the firmware for master" is only meaningful if master rebuilds
+  # itself; without this, merging a change produced no artifact until someone opened a
+  # PR or dispatched the workflow by hand.
+  push:
+    branches: [master]
 
 permissions:
   contents: read

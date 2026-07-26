@@ -117,3 +117,43 @@ Everything else in the Phase-2 request (travelmate, mwan3, tailscale, openconnec
 - r35420 vs live rolled snapshot: everything above is **r35420** (the pinned base). ~~The only known drift observed is the `kmod-usb-net-rndis` → `kmod-usb-net-rndis-host` rename on the live snapshot.~~ **CORRECTION (2026-07-26): the rename appears to be mistaken.** Upstream `package/kernel/linux/modules/usb.mk` on `main` still defines `KernelPackage/usb-net-rndis` (i.e. `kmod-usb-net-rndis`), with `DEPENDS:= +kmod-usb-net-cdc-ether`. Dependency resolution makes the distinction moot in any case. Version strings will still have advanced on live (e.g., kmod release bumps `-r1`→`-r2+`).
 - `[idx]` versions are byte-exact from the pinned ADB index; `[src]` versions are from the master source tree (presence is index-confirmed, only the exact `-rN` wasn't cleanly extractable from the binary record).
 - Installed sizes are estimates; **tailscale (~30 MB) is the one to watch** for flash budget. Everything else is tens-to-low-hundreds of KB except `modemmanager` (~2–3 MB with glib2/dbus).
+
+---
+
+## Stage 2 addendum — resolved against the LIVE snapshot (2026-07-26)
+
+The table above is measured against r35420 / kernel 6.18.38. Re-resolved against the
+currently flashed snapshot **r35533-3b2bc55dcb / 6.18.39 / ABI `38ca7baf…`**, every Stage 2
+package is present and OpenWrt-signed:
+
+| Package | Feed | Version at this ABI |
+|---|---|---|
+| `464xlat` | base | `13` |
+| `kmod-nat46` | target kmods | `6.18.39.2025.11.04~adb2f72e-r1` |
+| `kmod-usb-serial-option`, `kmod-usb-net-rndis`, `kmod-usb-net-cdc-ether`, `kmod-tun` | target kmods | `6.18.39-r1` |
+| `coreutils-stty` | packages | `9.11-r1` |
+| `lpac` | packages | `2.3.0-r2` |
+| `travelmate` / `luci-app-travelmate` | packages / luci | `2.4.6-r2` / `2.4.6-r3` |
+| `tailscale` | packages | `1.98.3-r1` |
+| `mwan3` | packages | `2.12.2-r1` |
+| `luci-app-mwan3`, `luci-app-tailscale-community` | luci | `26.205.35795~96a255d` |
+
+**This closes the `464xlat` / `kmod-nat46` gap** — both were referenced by the roadmap and
+the APN reference but their feed availability had never actually been checked. Both exist.
+
+> ⚠️ **Gotcha when scripting these listings.** LuCI-native packages carry a `~` in their
+> version (`luci-app-mwan3-26.205.35795~96a255d.apk`). A filename regex whose character
+> class omits `~` silently returns *nothing* for them — which briefly looked like
+> `luci-app-mwan3` and `luci-app-tailscale-community` had vanished from the feed. They had
+> not. Always include `~` when matching apk filenames.
+
+### `kmod-usb-acm` is NOT needed — dropped
+
+The main table lists `kmod-usb-acm` among the modem kmods, and the earlier correction block
+recommended shipping it alongside `kmod-usb-serial-option` because the FM350's interfaces
+were believed to be CDC-ACM class (C4). **Measured on hardware, that is wrong.** The device
+exposes no CDC-ACM-class interface at all: If#0 is `02/02/ff` (RNDIS control), If#1 is
+`0a/00/00` (RNDIS data), If#5 is `ff/42/01` (ADB), and the seven AT/diag ports are all
+`ff/00/00` — which `option` claims explicitly. `cdc_acm` can never bind here, so
+`kmod-usb-acm` is dead weight and is not in the shipped package set.
+See `H5000M-hardware-notes.md` §"FM350 on the clean base" for the full interface map.
