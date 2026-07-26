@@ -63,3 +63,57 @@ jobs:
           path: artifacts/H5000M-official-base-*/
           if-no-files-found: error
           retention-days: 14
+
+      # --- optional second artifact: base + signed plugins -------------------------
+      # The clean base above is already built, asserted and uploaded; nothing below can
+      # affect it. Both steps are best-effort on purpose: the plugin repo is built against
+      # whatever snapshot was current when the plugins repo last ran, and under the rolling
+      # model the mirror may have moved since. When the kernel ABIs disagree the loaded
+      # image MUST fail rather than ship kmods that install cleanly and never load - so the
+      # ABI gate failing here is correct behaviour, not a broken build, and the clean base
+      # is still published.
+      - name: 获取插件离线仓库
+        id: plugins
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.H5000M_PLUGIN_ARTIFACT_TOKEN || github.token }}
+        run: |
+          set -eu
+          run_id="$(gh run list --repo dingyifei/openwrt-H5000M-plugins \
+            --workflow build.yml --branch master --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+          [ -n "${run_id:-}" ] || { echo "::warning::no successful plugin build; loaded image SKIPPED"; exit 1; }
+          gh run download "$run_id" --repo dingyifei/openwrt-H5000M-plugins \
+            --name offline-repo --dir plugin-repo
+          [ -s plugin-repo/PROVENANCE.txt ] || { echo "::warning::plugin artifact has no PROVENANCE.txt"; exit 1; }
+          echo "dir=$(cd plugin-repo && pwd)" >> "$GITHUB_OUTPUT"
+          sed -n 's/^kernel_abi=/plugin abi /p;s/^revision=/plugin rev /p' plugin-repo/PROVENANCE.txt
+
+      - name: 构建完整固件（基础 + 插件）
+        id: loaded
+        if: steps.plugins.outcome == 'success'
+        continue-on-error: true
+        env:
+          OPENWRT_ROLLING: "1"
+          OPENWRT_LOCAL_CACHE: ${{ runner.temp }}/openwrt-official-cache
+          OPENWRT_LOCAL_ARTIFACTS: ${{ github.workspace }}/artifacts
+          H5000M_LOADED_IMAGE: "1"
+          H5000M_PLUGIN_REPO: ${{ steps.plugins.outputs.dir }}
+        run: ./scripts/build-official-base-local.sh
+
+      - name: 上传完整固件
+        if: steps.loaded.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: H5000M-loaded
+          path: artifacts/H5000M-loaded-*/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 报告完整固件状态
+        if: steps.plugins.outcome != 'success' || steps.loaded.outcome != 'success'
+        run: |
+          echo "::warning::loaded image not produced (plugins: ${{ steps.plugins.outcome }}, build: ${{ steps.loaded.outcome }})"
+          echo "The clean base above is unaffected. The usual cause is a kernel-ABI mismatch:"
+          echo "the plugin repo was built against an older snapshot. Re-run the plugins"
+          echo "workflow so both halves resolve against the current snapshot."
