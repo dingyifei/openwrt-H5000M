@@ -8,6 +8,10 @@
 # travelmate, tailscale, mwan3 and the LuCI apps) are resolved by apk from the signed
 # plugin repo plus the official feeds.
 h5000m-fm350
+# Must be listed explicitly: luci-proto-fm350 DEPENDS on h5000m-fm350, not the reverse, so
+# nothing pulls it in. Without it LuCI renders the cellular interface as "unsupported
+# protocol type" and offers no form at all - verified missing from the r35551 loaded image.
+luci-proto-fm350
 h5000m-lpac
 h5000m-travelmate-defaults
 h5000m-tailscale-defaults
