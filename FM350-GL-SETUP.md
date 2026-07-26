@@ -659,3 +659,45 @@ mrhaav's `atc-fib-fm350_gl` sequence verbatim with the AT port held open, since 
 transaction model may simply be missing the `+CGEV: ME PDN ACT` that signals success;
 (2) only then consider `+EPDN`, and only with a set form read out of MTK RIL source rather
 than guessed.
+
+---
+
+# 13. ⭐ SOLVED: the data path works with EXACTLY ONE active context
+
+Measured 2026-07-26 on the clean base, working China Telecom SIM.
+
+```
+AT+EAPNACT=0,<aid>   … for every currently-active aid   <- deactivate ALL first
+AT+EAPNACT=1,"ctnet","default"        -> +CGEV: ME PDN ACT 3,2
+AT+CGPADDR=3                          -> 10.141.14.81
+ip link set eth2 arp off up
+ip addr add 10.141.14.81/24 dev eth2
+ip route replace default via 10.141.14.1 dev eth2
+```
+Result: **ping 4/4, RTT 31–86 ms**, and DNS resolves through the carrier resolver
+(`nslookup www.baidu.com 222.66.251.8` returns records). `rx_packets` climbs.
+
+## What actually mattered
+
+**Exactly one PDP context may be active.** Every earlier failure had two or more live
+(cid 2 from a manual `CGACT`, cid 3 from `EAPNACT`), and RNDIS forwarded none of them —
+tx climbed, rx stayed 0. Deactivating everything and activating exactly one made the same
+address and the same route start working. This — not the cid *number* — is the real
+constraint, which is why "use cid 1" appeared to work for some people and not others.
+
+**Use `+EAPNACT`, not `+CGACT`.** It activates by APN name and type, the modem picks the
+aid, and it never returns 5847. `AT+CGACT=1,1` cannot succeed on China Telecom because
+cid 1 is the IMS context (see §12).
+
+**`arp off` is required** — the generic `rndis_host` profile lacks `NOARP` for this device
+(OpenWrt PR #24196). Necessary but not sufficient on its own.
+
+**Parsing trap:** `AT+CGPADDR` returns the IPv6 address as **sixteen** dotted octets, which
+a naive `[0-9.]+` regex happily matches as if it were IPv4. Select the value with exactly
+four octets.
+
+## Consequences for h5000m-fm350
+
+The dialer must be rewritten around this: deactivate all aids, `EAPNACT` exactly one,
+parse the aid out of `+CGEV: ME PDN ACT <aid>,<n>`, read `CGPADDR=<aid>` (four-octet
+field), set `arp off`, then publish. `pdp_index` becomes meaningless and should go.
