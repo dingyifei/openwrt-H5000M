@@ -628,3 +628,34 @@ dialling**, not evidence of hidden bearer commands.
 
 `AT+CNMP` does **not** exist on this modem (it is a Quectel command). The FM350 equivalents
 are `AT+GTACT` (§11.1.14) and `AT+E5GOPT` (§12.2.15).
+
+## Diagnostics run 2026-07-26 (results)
+
+**`AT+CEER` returns `+CEER: 0,NONE` immediately after a fresh `+CME ERROR: 5847`.**
+There is no network cause because the network was never asked: the modem refuses the
+activation **locally**. This corroborates the reading of 5847 as a MediaTek local
+policy/state refusal, and it is further reason to stop trying to force cid 1 — the refusal
+is the firmware protecting its IMS context, not a negotiation we can win with better
+timing or a different APN.
+
+**`AT+CLAC` is NOT exhaustive on this firmware — do not use it to prove absence.**
+It lists only 37 commands, essentially the network/registration group. `+CGACT`,
+`+CGDCONT` and `+EAPNACT` are all absent from that list and all demonstrably work.
+
+> ⚠️ **Read/test forms erroring proves nothing on this firmware.** `AT+EAPNACT=?` returns
+> `+CME ERROR: unknown`, yet `AT+EAPNACT=1,"ctnet","default"` works. This is the same trap
+> that produced the earlier false conclusion about `AT+EIAAPN`. Therefore the `+CME ERROR`
+> from `AT+EPDN?`, `AT+EAPNSET?` and `AT+ECNCFG?` does **not** establish that those
+> commands are missing — only a correctly-formed set command would, and guessing one blind
+> is how this modem gets wedged.
+
+**State at the end of the session:** two bearers active and healthy —
+`+CGACT: 2,1` (`ctnet`, IPv4 `10.87.138.159` + IPv6) and `+CGACT: 3,1`
+(`ctnet`, `default` type, created by `EAPNACT`) — with `eth2` carrying **tx only, rx 0**,
+`arp off` applied. The bearer exists; RNDIS is not attached to it.
+
+**Next diagnostics, in order:** (1) capture what a *working* implementation does, by running
+mrhaav's `atc-fib-fm350_gl` sequence verbatim with the AT port held open, since our one-shot
+transaction model may simply be missing the `+CGEV: ME PDN ACT` that signals success;
+(2) only then consider `+EPDN`, and only with a set form read out of MTK RIL source rather
+than guessed.
