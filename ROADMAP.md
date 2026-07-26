@@ -151,12 +151,36 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
     along, it just never got a turn while the dialer fought over cid 1.
   - Removed with the old model: `pdp_index`, `EIAAPN`, and all `CFUN` radio cycling —
     which was also the main way the dialer could wedge the modem.
+  - ⭐ **The APN *type* is not stable and is now a ladder (2026-07-26).** Same SIM, same
+    carrier: `"default"` activated cleanly one session and returned `+CME ERROR: 5848`
+    the next with nothing active, while `"net"` activated immediately. `AT+CEER` reports
+    `0,NONE` — no network cause, so the refusal is local and unpredictable. The dialer now
+    tries the configured type, then `default`/`net`/`tethering`, as it already does for
+    the APN itself. Re-verified end to end: `10.120.135.159/24`, ping 4/4 @ 28 ms.
+  - 🐛 **`luci-proto-fm350` was missing from the loaded image** — it DEPENDS on
+    `h5000m-fm350`, not the reverse, so nothing pulled it in and LuCI kept showing
+    "unsupported protocol type". Now listed explicitly in
+    `configs/loaded-features.packages`, where the build's manifest assertion enforces it.
   - ⬜ Throughput/failover measurement deferred until `eth1` is connected.
 
-- 🔄 **2.4 eSIM (CLI only)** — in-feed `lpac` over its **AT backend**
-  (`LPAC_WITH_AT` is `default y`, verified). EPM web UI deferred. First test:
-  `lpac chip info` — the vendor image had zero eSIM support, so it is unconfirmed whether
-  this unit even has an eUICC.
+- 🔄 **2.4 eSIM — eUICC CONFIRMED PRESENT, lpac blocked (2026-07-26).** C15 is closed.
+  - ⭐ **This unit has a built-in eUICC.** The Hardware Guide §3.5 states the FM350
+    "supports dual SIM, one is a built-in eSIM"; measured, `AT+GTDUALSIM=?` → `(0-1)`, and
+    switching to slot 1 makes `AT+EID` return a real 32-digit EID. It reports
+    `+CPIN: EMPTY_EUICC` — present, no profile installed.
+  - ⭐ **`AT+EID` is the cheap probe.** It answers "is there an eUICC" with no lpac, no
+    logical channel and no slot switch. Empty string = not available (manual's definition).
+  - ⛔ **OpenWrt's `lpac` package hides a UCI wrapper.** `/usr/bin/lpac` is not the binary
+    (`/usr/lib/lpac` is); it **overwrites `LPAC_APDU`** from
+    `uci lpac.global.apdu_backend`, default `uqmi` → opens `/dev/cdc-wdm0`, which this
+    modem lacks. Symptom is a bare "Failed to open device". `h5000m-esim` now calls the
+    real binary directly.
+  - ⛔ **`AT+CCHO` to the ISD-R AID returns ERROR on both slots**, so lpac's `at` backend
+    cannot reach the applet; `at_csim` is not compiled into the packaged build. Unresolved
+    whether this is because the eUICC is empty or because the firmware never exposes ISD-R
+    that way. MediaTek's `+ESIMS` family is implemented and untried.
+  - ⚠️ **Switching slots broke PDP activation** until the APN type was changed — never
+    switch slots on a link you depend on without another way in.
 - ⬜ **2.5 mwan3** — wired(1) → `trm_wwan`(2) → discovered cellular iface(3); no hard-coded
   netdev; `mwan3.user` keeps `tailscale0` out. Track **public IPs**, never the cellular
   pseudo-gateway (it never answers ICMP). Re-validate flow offloading here — offloaded

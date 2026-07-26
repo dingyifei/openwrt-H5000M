@@ -701,3 +701,116 @@ four octets.
 The dialer must be rewritten around this: deactivate all aids, `EAPNACT` exactly one,
 parse the aid out of `+CGEV: ME PDN ACT <aid>,<n>`, read `CGPADDR=<aid>` (four-octet
 field), set `arp off`, then publish. `pdp_index` becomes meaningless and should go.
+
+---
+
+# eSIM / eUICC — settled 2026-07-26
+
+## ⭐ This unit HAS an eUICC, and it is empty
+
+The vendor firmware shipped no eSIM support, so whether the hardware had an eUICC at all
+was an open question (C15) for the whole project. It is now closed, from two independent
+sources.
+
+**Hardware Guide, §3.5 USIM Interface**, verbatim:
+
+> The FM350 module supports dual SIM, one is a built-in eSIM and another is a SIM card
+> interface.
+
+**Measured on the unit:**
+
+```
+AT+GTDUALSIM=?   -> +GTDUALSIM: (0-1)                  two SIM applications
+AT+GTDUALSIM?    -> +GTDUALSIM : 0, "SUB1", "NR"       slot 0 = physical SIM (in use)
+AT+GTDUALSIM=1   -> +ESIMS: 1,29 / +ESIMS: 0,1
+AT+GTDUALSIM?    -> +GTDUALSIM : 1, "SUB2", "NO SERVICE"
+AT+EID           -> +EID: 890330234263...              32 digits, per SGP.02
+AT+CPIN?         -> +CPIN: EMPTY_EUICC                 present, no profile installed
+```
+
+`AT+EID` on slot 0 returns the **empty string**, which the AT manual defines as "this
+information is not available" — consistent with slot 0 being the plastic SIM. On slot 1 it
+returns a real EID. That is the proof.
+
+> **The EID is a device identifier and is deliberately truncated here.** Read it from the
+> device when needed; do not commit it.
+
+## Why `AT+EID` matters more than it looks
+
+`AT+EID` answers the "is there an eUICC" question **without lpac, without a logical
+channel, and without switching anything** if the eUICC happens to be the active slot. It
+is the cheapest possible probe and should be the first thing any eSIM tooling runs.
+
+## ⛔ lpac cannot currently drive this eUICC
+
+Two separate blockers, found in order:
+
+**1. OpenWrt's `lpac` package hides a UCI wrapper.** `/usr/bin/lpac` is *not* the binary —
+the real one is `/usr/lib/lpac`. The wrapper does:
+
+```sh
+APDU_BACKEND="$(uci_get lpac global apdu_backend uqmi)"
+export LPAC_APDU="$APDU_BACKEND"
+```
+
+It **unconditionally overwrites `LPAC_APDU`**, so exporting `LPAC_APDU=at` and calling
+`lpac` silently selects the *uqmi* backend against `/dev/cdc-wdm0` — a device this modem
+does not have. The only symptom is `Failed to open device`, which reads like a permissions
+or port problem and is neither. Its AT branch is no better: `uci_get lpac at device` hard
+codes `/dev/ttyUSB2`, wrong on this unit and wrong again after any re-enumeration.
+
+`h5000m-esim` now calls `/usr/lib/lpac` directly so our environment stays authoritative.
+
+**2. `AT+CCHO` is refused, on both slots.** With the backend correctly selected, lpac gets
+past the device open and fails at `euicc_init`. Direct probing shows why:
+
+| command | result |
+|---|---|
+| `AT+CCHO=?` | OK — the command exists |
+| `AT+CSIM=?` | OK — the command exists |
+| `AT+CCHO="A0000005591010FFFFFFFF8900000100"` | **ERROR**, on slot 0 *and* slot 1 |
+| `LPAC_APDU=at_csim` | `No APDU driver found` — not compiled into this build |
+
+So the ISD-R applet cannot be reached over `AT+CCHO`/`AT+CGLA`, and the `at_csim`
+fallback the wrapper documents does not exist in the packaged binary.
+
+**Open question:** whether `AT+CCHO` is refused *because* the eUICC is empty
+(`EMPTY_EUICC` is not a READY card state, and a card that never initialises may refuse a
+logical channel), or because this firmware simply does not expose the ISD-R that way. The
+two are distinguishable only by trying against a provisioned eUICC — which is the
+chicken-and-egg, since lpac is how you would provision it.
+
+**Not yet tried:** MediaTek's proprietary `+ESIMS` family, which this firmware clearly
+implements (`AT+ESIMS?` → `+ESIMS: 1`, and slot switching emits `+ESIMS: 1,29` /
+`+ESIMS: 0,1`). If a documented `+ESIMS` profile-management form exists, it may be the
+path this firmware actually intends. `AT+EUICC?` returns ERROR.
+
+## ⚠️ Switching slots disrupts data — budget for it
+
+`AT+GTDUALSIM=1` then back to `0` left the modem registered (`+CEREG: 0,1`, `+CPIN: READY`,
+`+COPS: 46011`) but **unable to activate any PDP context** — `+CME ERROR: 5848` for the
+blank APN, `5841` for a named one, with `AT+CGACT?` empty and `AT+CEER` reporting
+`0,NONE`. A `CFUN=4`/`CFUN=1` cycle did not fix it.
+
+What fixed it was **changing the APN type** — see below. Do not switch slots on a link you
+depend on without a way back in over another path.
+
+## ⭐ The APN *type* is not stable, and that is now a ladder
+
+Same SIM, same carrier, roughly an hour apart:
+
+| session | `AT+EAPNACT=1,"","default"` | `AT+EAPNACT=1,"","net"` |
+|---|---|---|
+| first | ✅ `+CGEV: ME PDN ACT <aid>` | not tried |
+| after a slot switch | ❌ `+CME ERROR: 5848` | ✅ `+CGEV: ME PDN ACT 3,2` |
+
+Nothing was active in either case (`AT+CGACT?` empty), and `AT+CEER` reported
+`+CEER: 0,NONE` — **no network cause at all**, so the refusal is local and carries no
+reason. A refusal that gives no reason cannot be predicted, only probed.
+
+The dialer therefore **ladders over the APN type** — configured type first, then
+`default`, `net`, `tethering` — exactly as it already ladders over the APN itself. Failing
+a whole bring-up because one type was refused was leaving a working path untried.
+
+`AT+EAPNACT?` (read form) returns `+CME ERROR: unknown`, which — per the read-form trap
+recorded earlier in this document — proves nothing about the set form.
