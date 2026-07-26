@@ -79,14 +79,43 @@ jobs:
           GH_TOKEN: ${{ secrets.H5000M_PLUGIN_ARTIFACT_TOKEN || github.token }}
         run: |
           set -eu
-          run_id="$(gh run list --repo dingyifei/openwrt-H5000M-plugins \
-            --workflow build.yml --branch master --status success \
-            --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
-          [ -n "${run_id:-}" ] || { echo "::warning::no successful plugin build; loaded image SKIPPED"; exit 1; }
-          gh run download "$run_id" --repo dingyifei/openwrt-H5000M-plugins \
-            --name offline-repo --dir plugin-repo
+          repo=dingyifei/openwrt-H5000M-plugins
+
+          # Take the build for the plugin repo's CURRENT master HEAD, not merely the most
+          # recent successful run. Those differ whenever both repos are pushed together:
+          # the plugins build is still running when this step queries, so "latest success"
+          # is the PREVIOUS commit and the loaded image silently ships stale plugins. That
+          # happened twice on 2026-07-26 - once shipping a dialer without the APN-type
+          # ladder - and left no trace, because the build succeeds either way.
+          head_sha="$(gh api "repos/${repo}/commits/master" --jq '.sha' 2>/dev/null || true)"
+          [ -n "${head_sha:-}" ] || { echo "::warning::cannot resolve plugin master HEAD; loaded image SKIPPED"; exit 1; }
+          echo "plugin master HEAD ${head_sha}"
+
+          # The plugins build for that SHA may still be in flight; wait a bounded time
+          # rather than racing it. ~10 min covers a cold plugin build with room to spare.
+          run_id=''
+          for _ in $(seq 1 40); do
+            run_id="$(gh run list --repo "$repo" --workflow build.yml \
+              --commit "$head_sha" --status success --limit 1 \
+              --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+            [ -n "${run_id:-}" ] && break
+            # Stop early if that SHA's run has already finished unsuccessfully - waiting
+            # out the full timeout would only delay the same failure.
+            state="$(gh run list --repo "$repo" --workflow build.yml \
+              --commit "$head_sha" --limit 1 \
+              --json status,conclusion --jq '"\(.[0].status)/\(.[0].conclusion)"' 2>/dev/null || true)"
+            case "$state" in
+              completed/*) echo "::warning::plugin build for ${head_sha} ended ${state}; loaded image SKIPPED"; exit 1 ;;
+            esac
+            echo "waiting for plugin build of ${head_sha} (state ${state:-unknown})"
+            sleep 15
+          done
+          [ -n "${run_id:-}" ] || { echo "::warning::no successful plugin build for ${head_sha}; loaded image SKIPPED"; exit 1; }
+
+          gh run download "$run_id" --repo "$repo" --name offline-repo --dir plugin-repo
           [ -s plugin-repo/PROVENANCE.txt ] || { echo "::warning::plugin artifact has no PROVENANCE.txt"; exit 1; }
           echo "dir=$(cd plugin-repo && pwd)" >> "$GITHUB_OUTPUT"
+          echo "plugin commit ${head_sha}"
           sed -n 's/^kernel_abi=/plugin abi /p;s/^revision=/plugin rev /p' plugin-repo/PROVENANCE.txt
 
       - name: 构建完整固件（基础 + 插件）
