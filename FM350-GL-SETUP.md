@@ -9,6 +9,12 @@ It is written to be followed step by step, including by a small/less-capable age
 
 ---
 
+> ⛔ **THE "ONE KEY FACT" BELOW IS CONTRADICTED BY UPSTREAM EVIDENCE — see §12.**
+> QModem #179 shows an FM350-GL over RNDIS working on **cid 3**, and QModem's maintainer
+> disowns the `pdp_index` theory entirely (it originated in a misdiagnosed Quectel EC200
+> argument-order bug). On a China Telecom SIM, forcing the internet APN onto cid 1 fights
+> the firmware, because cid 1 is auto-provisioned as IMS. Read §12 before following §4/§5.
+
 ## ⭐ THE ONE KEY FACT (this is what makes it work)
 
 > **The FM350-GL in RNDIS/USB mode ONLY forwards internet traffic on PDP context ID 1
@@ -304,9 +310,10 @@ SIM actually has coverage for its carrier; you are not using a mismatched IoT SI
 No amount of APN/context tweaking fixes a radio that has no signal.
 
 ### D. `AT+CGACT=1,1` → `+CME ERROR: 5847`
-**Cause:** trying to (re)provision context 1 while the radio is attached. **Fix:** detach
-first — `AT+CFUN=4`, then `AT+CGDCONT=1,...`, then `AT+CFUN=1`, wait for registration,
-then `AT+CGACT=1,1` (Section 5b/5c).
+⛔ **The explanation previously given here ("you skipped the CFUN=4/CFUN=1 detach") was
+invented.** It has no source, and it is falsified by our own measurement: we performed the
+detach cycle correctly and still got 5847. See §12 for what 5847 actually is and the
+handling the one shipped implementation uses (**retry the same command**).
 
 ### E. `AT+GTRNDIS` → `+CME ERROR: 100`
 **Not a bug.** This firmware does not implement `GTRNDIS`; MediaTek FM350 uses `CGACT`.
@@ -527,3 +534,97 @@ error table (§20.2 p231) for the real meaning of **5847**. Also untested: wheth
 
 **Do not guess AT commands here.** Every wrong turn so far came from inferring a command's
 behaviour instead of reading its definition; the manual has been right each time.
+
+
+---
+
+# 12. Upstream evidence review (2026-07-26) — corrections to this document
+
+Sourced from the Fibocom manual, MediaTek RIL source, and shipped OpenWrt packages.
+Several claims elsewhere in this file are **wrong**; they are corrected here.
+
+## `+CME ERROR: 5847` is not a network reject, and not a detach problem
+
+- **Not documented by Fibocom.** The CME table (§20.2, both V2.2 and public V2.10) ends at
+  `1283`. No 4-digit vendor codes exist in either manual.
+- **Not a 3GPP cause.** MediaTek's RIL decodes data-call errors by base offset
+  (`RmcDataDefs.h`): SM `0xC00`, ESM `0xD00`, PAM `0x1200`, CME `0x64`. `5847 = 0x16D7`
+  falls outside every range, so it is a **MediaTek-internal local cause**, which MTK's own
+  RIL maps to `PDP_FAIL_ERROR_UNSPECIFIED`. The neighbouring named constant
+  `0x1671 (5745) = PDP_FAIL_DATA_NOT_ALLOW` suggests this block is MTK's local
+  policy/state refusal family.
+- **The one shipped implementation simply retries.** mrhaav's `atc-fib-fm350_gl`
+  (`/lib/netifd/proto/atc.sh`): on `+CME ERROR` with value `5847`, re-send `AT+CGACT=1,1`.
+- **Never run:** `AT+CEER` (§20.1.2) is the vendor-sanctioned decoder and returns a textual
+  category such as "SM activation error". `AT+CLAC` (§3.14) enumerates what this firmware
+  actually implements. **Both are documented and both should be the next diagnostics.**
+
+## cid 1 is IMS *by design* on China Telecom — stop fighting it
+
+QModem **#169** is the same modem, same carrier, same symptom:
+```
++CGDCONT: 1,"IPV4V6","IMS", …,1,1,,0,1,0     <- IM_CN_Signalling_Flag_Ind = 1
++CGDCONT: 2,"IPV4V6","CTNET", …
+CGPADDR=1 -> IPv6 only          CGPADDR=2 -> 10.x + IPv6
+```
+That trailing flag is `IM_CN_Signalling_Flag_Ind` (§12.2.1): **"this context is for IM CN
+subsystem signalling only"**. cid 1 is auto-created, already active, and flagged not to
+carry user traffic. Our device matches exactly — `CGCONTRDP=1` reports `IMS`, `CGPADDR=1`
+is IPv6-only, and `CGCONTRDP=2` grants `ctnet` with a real IPv4.
+
+**So the internet bearer is cid 2, not cid 1.** QModem #179 further shows RNDIS working on
+**cid 3**, and QModem's maintainer states `pdp_index` "should not be set at all" — the knob
+came from a misdiagnosed Quectel EC200 argument-order bug. QModem's own default for
+fibocom/mediatek is 3.
+
+## What the working implementations actually do
+
+mrhaav's shipped sequence differs from ours in four ways:
+1. `AT+CGACT` is issued only after **`AT+COPS?` confirms registration**, not merely on
+   `+CEREG: 0,1`.
+2. Success is **`+CGEV: ME PDN ACT <cid>`**, not `OK`.
+3. The AT port is **held open** and commands are fire-and-forget.
+4. `+CME ERROR: 5847` → **retry**.
+
+`AT+EIAAPN` is used with its full 7-argument form, before `CFUN=1`.
+
+⚠️ **`AT+CGACT` may return no terminal response at all** on this modem (GL.iNet
+`gl-modem-community` PR #8: the stock AT broker blocks ~160 s; their fix synthesises an
+`OK`). A one-shot AT call with a short timeout cannot survive that — our `atq`-style
+transaction model is exposed here.
+
+## Host-side gap: the RNDIS netdev is mis-flagged
+
+OpenWrt PR **#24196** (open) adds explicit `rndis_host` IDs for `0e8d:7126`/`0e8d:7127`
+with `FLAG_WWAN | FLAG_POINTTOPOINT | FLAG_NOARP`, because the generic RNDIS matcher
+rejects the FM350 (it reports physical medium `WIRELESS_LAN`). On stock kernel 6.18.39 we
+fall through to the **generic** profile — ARP on, not point-to-point. koshev's `xmm.sh`
+compensates with `ip link set dev <if> arp off`.
+
+**Measured on our device:** setting `arp off` (flags `0x1083`, NOARP confirmed) and routing
+cid 2's address over `eth2` still gives **tx=14 / rx=0**. So the missing flags are a real
+gap but **not sufficient on their own**.
+
+## Corrected: `+EAPNACT` is MediaTek's primary activation path
+
+MTK RIL (`RmcDcCommonReqHandler.cpp`) uses `AT+EAPNACT=1,"<apn>","<type>"` as its
+**primary** activation, waiting for `+CGEV: ME PDN ACT <aid>` — **the modem chooses the
+aid**, the host does not. Deactivate is `AT+EAPNACT=0,<aid>`.
+Measured here: `AT+EAPNACT=1,"ctnet","default"` → `+CGEV: ME PDN ACT 3,2`, cid 3 active,
+no `CFUN` cycle and no 5847. Still no RNDIS traffic.
+
+## Still unknown
+
+**How the single RNDIS netdev is bound to a context.** There is no binding command in
+either manual. MTK's stack uses `AT+EPDN=<aid>,"ifst",…` (verified in RIL source) but
+`+EPDN` is undocumented for FM350 and untested. `AT+CLAC` would reveal whether it exists.
+
+## Also corrected
+
+`+EDSBP` / `+ESIMS` are **not** data-bearer commands. `+EDSBP` is MediaTek's *Dynamic SBP
+(carrier configuration) change* indication and `+ESIMS` is a SIM URC — they mean the modem
+is swapping carrier config after seeing the SIM, which is a reason to **wait before
+dialling**, not evidence of hidden bearer commands.
+
+`AT+CNMP` does **not** exist on this modem (it is a Quectel command). The FM350 equivalents
+are `AT+GTACT` (§11.1.14) and `AT+E5GOPT` (§12.2.15).
