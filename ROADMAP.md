@@ -133,35 +133,27 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
 - 🔄 **2.2 Tailscale** — `tailscale` + `kmod-tun` + `luci-app-tailscale-community`
   (the maintained in-feed app); ship logged out; `tailscale0` zone. Flash is a non-issue.
   Zone + both forwardings created and verified idempotent on device.
-- 🔄 **2.3 FM350 cellular** — `kmod-usb-serial-option` + `kmod-usb-net-rndis`
-  (+ `464xlat`/`kmod-nat46` for IPv6-only US carriers), plus
-  `h5000m-modem-atd` (AT broker) and `h5000m-fm350` (netifd proto + dialer).
-  - ✅ **Driver stack proven on hardware.** kmods installed from the official feed →
-    exactly **7 `ttyUSB` nodes + `eth2`**, matching the `option.c` interface filter.
-  - ⛔ **`kmod-usb-acm` DROPPED** — there is no CDC-ACM-class interface on this modem, so
-    the C4 dual-binding concern does not apply.
-  - ⭐ **Only ONE AT port exists** (interface 6 = `ttyUSB3`); the vendor's second port
-    (`ttyUSB1`) is silent. **C5 is falsified** and the two-tier broker is replaced by a
-    single port with per-transaction locking (dialer is a peer, not an owner).
-  - ⭐ **`AT+EIAAPN` and `AT+CGAUTH` are unsupported** on this firmware → `AT+CGDCONT=1`
-    is the only APN lever (settles C17); `auth` can only ever be `none` (confirms C13).
-  - ⛔ **e2e attach is BLOCKED by the SIM, not the code**: `+CEREG: 0,3` registration
-    denied, both automatically and when forced. Needs a different SIM.
-  - ⛔ **MBIM target DROPPED.** `AT+GTUSBMODE=?` → only `(40,41)`, **both RNDIS**. There is
-    no MBIM/QMI over USB on this modem (MBIM is PCIe-only via `mtk_t7xx`).
-    `umbim`/`uqmi`/`cdc-mbim`/`qmi-wwan` are dead ends here.
-  - ⭐ **Key data-path fix:** RNDIS forwards only on **PDP context 1**
-    (`AT+CGDCONT=1,…` + `AT+CGACT=1,1`). Wrong context → tx rises, rx stuck ~2,
-    `NETDEV WATCHDOG` (silent RX drop).
-  - ⭐ **APN: blank first.** `AT+CGDCONT=1,"IPV4V6",""` requests the subscription default
-    and is self-correcting; a wrong APN silently black-holes traffic. The IMSI table is an
-    optimisation, not the primary path.
-  - ⭐ Never hard-code the netdev or AT port — discover from USB `0e8d:7127`; handle both
-    `ttyUSB` (option) and `ttyACM` (cdc_acm) bindings.
-  - ✅ Field research: `FM350-GL-SETUP.md`, `stock-fw-opkg-installed.md`,
-    `docs/FM350-GL-*.pdf` — written against ImmortalWrt+QModem; modem facts port, QModem
-    specifics are reference only.
-- ⬜ **2.4 eSIM (CLI only)** — in-feed `lpac` over its **AT backend**
+- ✅ **2.3 FM350 cellular — WORKING end to end (2026-07-26).** `ifup cellular` brings the
+  link up unattended and passes traffic: `up: true`, `10.20.22.218/24`, rx 544 vs tx 108,
+  HTTP responses over `eth2`. Ships `auto=1`.
+  - ⭐ **The real constraint is that EXACTLY ONE PDP context may be active** — not the cid
+    number. With two or more live, RNDIS forwards none of them (tx climbs, rx stays 0).
+    This retires the "cid 1 only" rule that was in our docs, QModem's docs and upstream
+    folklore alike; it only ever appeared true when nothing else happened to be active.
+  - ⭐ **`+EAPNACT` replaces `+CGACT`** — activates by APN name and type, the modem picks
+    the aid, and it never returns the local refusal `5847`, which `AT+CGACT=1,1` always
+    will where the carrier owns cid 1 for IMS (China Telecom does). Success is
+    `+CGEV: ME PDN ACT <aid>`, not `OK`.
+  - ⭐ **`arp off`** on the RNDIS netdev (OpenWrt PR #24196 — the generic `rndis_host`
+    profile lacks `NOARP` for `0e8d:7127`). Necessary but not sufficient alone, which is
+    why each fix tested in isolation looked like a dead end.
+  - ⭐ **Blank APN worked** (`apn='<subscription default>'`) — blank-first was right all
+    along, it just never got a turn while the dialer fought over cid 1.
+  - Removed with the old model: `pdp_index`, `EIAAPN`, and all `CFUN` radio cycling —
+    which was also the main way the dialer could wedge the modem.
+  - ⬜ Throughput/failover measurement deferred until `eth1` is connected.
+
+- 🔄 **2.4 eSIM (CLI only)** — in-feed `lpac` over its **AT backend**
   (`LPAC_WITH_AT` is `default y`, verified). EPM web UI deferred. First test:
   `lpac chip info` — the vendor image had zero eSIM support, so it is unconfirmed whether
   this unit even has an eUICC.
