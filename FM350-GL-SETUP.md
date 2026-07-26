@@ -479,9 +479,51 @@ supported way to rebind RNDIS to another cid.
 > started too early returns instantly on a stale "registered". Wait for `CEREG`
 > to leave the registered state before reprovisioning.
 
-## Open question
+## What the AT manual actually says — two of our conclusions were WRONG
 
-How to stop the network placing IMS on cid 1 — e.g. changing the UE mode of
-operation (`AT+CEMODE`) or disabling IMS/VoLTE so the data bearer lands on cid 1.
-**Unverified**; do not treat any specific command here as known-good until it has
-been read out of the Fibocom AT manual and tested.
+Read out of `docs/FM350-GL-AT-Commands.pdf` (V2.2), not inferred:
+
+### `+EIAAPN` takes SEVEN parameters (§12.2.14, p158)
+
+```
+AT+EIAAPN=<APN_Name>,<APN_Index>,<PDP_type>,<Roaming_PDP_type>,<auth_type>,<username>,<password>
+```
+`<APN_Index>`: "No use, specify it as 0". `<auth_type>`: **0 None, 1 PAP, 2 CHAP**.
+
+We called it as `AT+EIAAPN="ctnet","IPV4V6"` — two arguments — got `+CME ERROR`, and
+concluded the command does not exist. **That conclusion was wrong**: we called it with the
+wrong arity. The manual also defines no read (`?`) or test (`=?`) form, so those returning
+errors proves nothing either. **Two downstream claims must be re-tested:**
+- that this firmware has no initial-attach-APN knob;
+- that PAP/CHAP is impossible because `+CGAUTH` is absent — `EIAAPN` carries `auth_type`,
+  `username` and `password` itself.
+
+### `+EAPNACT` activates by APN NAME AND TYPE, not by cid (§12.2.16, p159)
+
+```
+AT+EAPNACT=<state>,<parameter>        state 1 = activate -> <apn_name>,<apn_type>
+                                      state 0 = deactivate -> <aid>
+```
+`<apn_type>` is an enum of *purposes*:
+`unknow / default / ims / mms / supl / dun / hipri / fota / cbs / emergency / ia / dm /
+wap / net / cmmail / tethering / rcse / xcap / rcs`
+
+This reframes the whole problem. The modem organises bearers by **purpose**, not by cid
+number — cid 1 holding `IMS` is not an accident of numbering, it is simply the `ims`-type
+context. So "RNDIS forwards cid 1 only" is probably the wrong mental model; what likely
+matters is the APN *type* bound to the RNDIS data path.
+
+**Measured:** `AT+EAPNACT=1,"ctnet","default"` → `+CGEV: ME PDN ACT 3,2`, and
+`+CGACT: 3,1` — a `default`-type `ctnet` context activates cleanly on cid 3, with no
+`CFUN` cycle and no 5847. But `eth2` still shows `rx=0`, so RNDIS is still not carrying it.
+
+## Still open
+
+Which context the RNDIS data path is actually bound to, and how to bind it. Candidates not
+yet read out of the manual: `+CEMODE` (UE modes of operation for EPS, §11.1.9 p119),
+`+E5GOPT` (5G option, §12.2.15), `+CGDATA` (§12.2.8), `+CGCMOD` (§12.2.7), and the CME
+error table (§20.2 p231) for the real meaning of **5847**. Also untested: whether
+`apn_type` `net` or `tethering` — rather than `default` — is what RNDIS forwards.
+
+**Do not guess AT commands here.** Every wrong turn so far came from inferring a command's
+behaviour instead of reading its definition; the manual has been right each time.
