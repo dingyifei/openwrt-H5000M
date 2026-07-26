@@ -814,3 +814,103 @@ a whole bring-up because one type was refused was leaving a working path untried
 
 `AT+EAPNACT?` (read form) returns `+CME ERROR: unknown`, which — per the read-form trap
 recorded earlier in this document — proves nothing about the set form.
+
+---
+
+# The modem is a computer that reboots itself (measured 2026-07-26)
+
+Two behaviours here look like host-side bugs and are not. Both cost a debugging round.
+
+## Why there are seven `ttyUSB` nodes but only one AT port
+
+`option` binds on the descriptor filter `ff/00/00`. That is the **vendor-specific class** —
+it means "this is a vendor interface", not "this is an AT port". Seven interfaces on this
+modem match it (2, 3, 4, 6, 7, 8, 9), so `option` creates a `ttyUSB` for every one. The
+driver has no way to know what is behind them.
+
+Only **interface 6** runs an AT parser. The other six are MediaTek proprietary binary
+channels — modem logging/DIAG, GNSS, coredump. They are not locked or privileged; there is
+simply nothing AT-shaped listening, which is why probing them yields silence rather than an
+error. Interface 5 (`ff/42/01`) is ADB and is not claimed by any driver.
+
+That silence is also where the 30-second stalls come from: bytes written to a port with no
+reader are never drained, so `close()` blocks trying to flush them. The discovery code's
+detached-probe design exists for this reason.
+
+## The modem self-resets, and everything vanishes for ~90 s
+
+Measured: a USB control transfer returned **`-110` (ETIMEDOUT)**, every `ttyUSB` node
+disappeared, and about 90 seconds later all seven plus the RNDIS netdev came back with **no
+host-side involvement at all**. Nothing on the Linux side failed — we simply watched the
+modem reboot.
+
+Consequences worth designing around:
+
+- **Do not treat one failed probe as "no modem".** It is far more likely to be a modem
+  mid-boot than an absent one.
+- **The modem finishes booting strictly later than the USB bus enumerates.** At boot there
+  is a window where all the interfaces exist and nothing answers AT.
+- USB autosuspend is **not** involved — `power/control` is already `on`.
+
+### This broke `auto=1` on the first flashed image
+
+The boot log contained `h5000m-modem: no AT port responded on 2-1` **exactly once**, and
+discovery never retried. Cellular therefore stayed down until a human ran `ifup`, which
+defeats the whole point of bringing the interface up at boot.
+
+The dialer now **polls for up to two minutes** before declaring `NO_MODEM`/`NO_NETDEV` and
+blocking restarts. The `sleep` inside that loop is load-bearing rather than incidental:
+netifd respawns a proto command that exits, so **failing fast is the dangerous behaviour
+here** and failing slowly is the safe one.
+
+## ⭐ Recovery: a single endpoint can go half-dead, and `unbind` does not fix it
+
+The failure is not always whole-device. Observed state:
+
+| check | result |
+|---|---|
+| `stty -F /dev/ttyUSB0` | `speed 9600 baud` — healthy |
+| `stty -F /dev/ttyUSB6` | `speed 9600 baud` — healthy |
+| **`stty -F /dev/ttyUSB3`** | **`Not a tty`** — the AT port alone is broken |
+| passive read of `ttyUSB3` | returns only our own writes echoed back (`AT\r…`), no modem response |
+| `lsusb`, driver bindings, `eth2` | all present and correct |
+
+So the device enumerates perfectly while **interface 6's serial endpoint specifically** is
+dead. Nothing in `lsusb` or the driver bindings reveals this; only `stty` does.
+
+**`unbind`/`bind` of the USB device does NOT fix this, and can make it worse** — it left
+the modem failing `can't set config #1, error -110` with every `ttyUSB` gone.
+
+What does fix it:
+
+```sh
+echo 0 > /sys/bus/usb/devices/2-1/authorized
+sleep 8
+echo 1 > /sys/bus/usb/devices/2-1/authorized
+# ~70 s later: seven ttyUSB nodes return and stty reports a valid 9600-baud tty
+```
+
+Verify recovery with `stty`, not with `ls` — the nodes reappear before the endpoint works:
+
+```sh
+stty -F /dev/ttyUSB3 -a | head -1      # want: speed 9600 baud ...
+atq 'AT+CGMM'                           # want: FM350-GL
+```
+
+After that, `modem-ports --rescan` succeeds and `ifup cellular` comes up normally.
+
+> **What triggered it here was SIM-slot switching** (`AT+GTDUALSIM`). That is the same
+> operation that broke PDP activation until the APN type was changed. Treat slot switching
+> as a disruptive operation and never do it over a link you depend on.
+
+## SMS validated against hardware on the same session
+
+`h5000m-sms status` (the `sms_tool` wrapper running under `at-lease`) returned:
+
+```
+Storage type: MT, used: 0, total: 90
+```
+
+So the SMS path works over the single AT port without disturbing the dialer. Note the
+storage reported is **`MT`**, not the `ME`/`SM` the `+CPMS` documentation describes — which
+is another reason this wrapper does not set a preferred storage by default.
