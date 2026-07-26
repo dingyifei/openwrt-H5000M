@@ -293,3 +293,115 @@ rm -rf "${FINAL_DIR}"
 mv "${TEMP_DIR}" "${FINAL_DIR}"
 echo "Build completed: ${FINAL_DIR}"
 cat "${FINAL_DIR}/SHA256SUMS"
+
+# --- Optional second artifact: the "loaded" image ---------------------------------
+# Everything above produced the CLEAN base: built, asserted, hashed, and proven free of
+# feature packages by the forbidden-package check. That artifact is untouched by this
+# stage and remains the thing we can show is stock OpenWrt.
+#
+# This stage optionally builds a SECOND image on the same ImageBuilder, adding the signed
+# H5000M plugins. Why bake them at all when they install fine over SSH: sysupgrade wipes
+# the overlay, so every reflash otherwise loses the entire feature set - and under the
+# rolling model reflashing is routine, on a travel router that may not have a laptop
+# nearby. Baking also makes the kernel-ABI contract structural rather than procedural:
+# the image and its kmods come out of one build, so they cannot disagree.
+if [ "${H5000M_LOADED_IMAGE:-0}" = 1 ]; then
+  : "${H5000M_PLUGIN_REPO:?H5000M_LOADED_IMAGE=1 requires H5000M_PLUGIN_REPO=<plugins repo>/offline-repo}"
+  [ -d "${H5000M_PLUGIN_REPO}/h5000m" ] || {
+    echo "H5000M_PLUGIN_REPO=${H5000M_PLUGIN_REPO} has no h5000m/ subdirectory." >&2
+    exit 1
+  }
+  [ -s "${H5000M_PLUGIN_REPO}/h5000m/packages.adb" ] || {
+    echo "Plugin repo has no signed index at h5000m/packages.adb." >&2
+    exit 1
+  }
+
+  loaded_packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' \
+    "${ROOT_DIR}/configs/loaded-features.packages" | tr '\n' ' ')"
+  [ -n "${loaded_packages// /}" ] || {
+    echo "configs/loaded-features.packages is empty." >&2
+    exit 1
+  }
+
+  # Kernel-ABI gate. A kmod built against a different kernel will install happily and then
+  # fail to load at boot, which is exactly the silent failure the rolling model invites.
+  # Assert every kmod in the plugin repo names this image's kernel version.
+  while IFS= read -r kmod; do
+    case "$(basename "${kmod}")" in
+      *"${OPENWRT_KERNEL}"*) ;;
+      *)
+        echo "Plugin repo kmod $(basename "${kmod}") was not built for kernel ${OPENWRT_KERNEL}." >&2
+        echo "Rebuild the plugin offline repo against this base before baking it in." >&2
+        exit 1
+        ;;
+    esac
+  done < <(find "${H5000M_PLUGIN_REPO}" -name 'kmod-*.apk' -print)
+
+  # Trust our signing key for the duration of the image build. This is the same key the
+  # firmware already embeds at /etc/apk/keys/h5000m-plugins.pem, so nothing new is being
+  # trusted - ImageBuilder's apk simply needs its own copy to verify the index we add.
+  cp -f "${ROOT_DIR}/official-base-files/etc/apk/keys/h5000m-plugins.pem" \
+    "${IMAGEBUILDER_DIR}/keys/h5000m-plugins.pem"
+
+  # Add ONLY our repo. The official feeds stay exactly as the clean base resolved them, so
+  # the in-feed dependencies come from the same snapshot rather than a second copy that
+  # could skew. Never use --allow-untrusted: if the signature does not verify, fail.
+  if ! grep -Fq "${H5000M_PLUGIN_REPO}/h5000m/packages.adb" "${IMAGEBUILDER_DIR}/repositories"; then
+    echo "${H5000M_PLUGIN_REPO}/h5000m/packages.adb" >> "${IMAGEBUILDER_DIR}/repositories"
+  fi
+
+  loaded_temp="${OPENWRT_LOCAL_ARTIFACTS}/.loaded-tmp"
+  loaded_final="${OPENWRT_LOCAL_ARTIFACTS}/H5000M-loaded-${OPENWRT_REVISION}"
+  rm -rf "${loaded_temp}" \
+    "${IMAGEBUILDER_DIR}/tmp" \
+    "${IMAGEBUILDER_DIR}/build_dir/target-${OPENWRT_ARCH}_musl/root-mediatek" \
+    "${TARGET_DIR}"
+  mkdir -p "${loaded_temp}"
+
+  make -C "${IMAGEBUILDER_DIR}" image \
+    PROFILE="${OPENWRT_PROFILE}" \
+    PACKAGES="${packages} ${loaded_packages}" \
+    FILES="${ROOT_DIR}/official-base-files"
+
+  loaded_sysupgrade="${TARGET_DIR}/openwrt-mediatek-filogic-hiveton_h5000m-squashfs-sysupgrade.bin"
+  test -s "${loaded_sysupgrade}"
+  cp "${loaded_sysupgrade}" "${loaded_temp}/"
+  cp "${TARGET_DIR}/profiles.json" "${loaded_temp}/"
+  cp "${ROOT_DIR}/configs/loaded-features.packages" "${loaded_temp}/"
+  make -C "${IMAGEBUILDER_DIR}" manifest \
+    PROFILE="${OPENWRT_PROFILE}" \
+    PACKAGES="${packages} ${loaded_packages}" \
+    > "${loaded_temp}/installed-package-manifest.txt"
+
+  # Inverse of the base check: here the plugins MUST be present. A loaded image that
+  # quietly shipped without them would look identical to the clean base.
+  for pkg in ${loaded_packages}; do
+    grep -Eq "^${pkg}[[:space:]]" "${loaded_temp}/installed-package-manifest.txt" || {
+      echo "Loaded image is missing ${pkg}." >&2
+      exit 1
+    }
+  done
+  # The AT broker is a dependency rather than a top-level entry, so assert it explicitly:
+  # its absence would mean the cellular stack cannot discover a port at all.
+  grep -Eq '^h5000m-modem-atd[[:space:]]' "${loaded_temp}/installed-package-manifest.txt" || {
+    echo "Loaded image is missing h5000m-modem-atd (pulled in by h5000m-fm350)." >&2
+    exit 1
+  }
+
+  {
+    sed -e 's/^custom_plugins_included=false$/custom_plugins_included=true/' \
+      "${FINAL_DIR}/BUILD-INFO.txt"
+    echo "image_variant=loaded"
+    echo "loaded_features=$(echo "${loaded_packages}" | tr -s ' ' ',' | sed 's/,$//')"
+  } > "${loaded_temp}/BUILD-INFO.txt"
+
+  (
+    cd "${loaded_temp}"
+    find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+      sort -z |
+      xargs -0 sha256sum > SHA256SUMS
+  )
+  rm -rf "${loaded_final}"
+  mv "${loaded_temp}" "${loaded_final}"
+  echo "Loaded image completed: ${loaded_final}"
+fi

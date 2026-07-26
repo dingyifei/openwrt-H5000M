@@ -12,6 +12,26 @@ official OpenWrt mt76 base.
 APK plugins from a sibling `openwrt-H5000M-plugins` repo. Do not port vendor
 `mt_wifi7` / mtwifi / DTS / kernel work — target is official mt76/mac80211.
 
+**Delivery model (decided 2026-07-26): hybrid — two images, not one.**
+Building/signing plugins separately and *installing* them post-flash were being treated
+as one decision; they are independent. The clean base is still built, asserted and hashed
+first and remains the artifact we can prove is stock OpenWrt. A **second, optional**
+artifact — the *loaded* image — is then built on the same ImageBuilder run with the signed
+plugin repo added (`H5000M_LOADED_IMAGE=1` + `H5000M_PLUGIN_REPO=<plugins>/offline-repo`,
+package list in `configs/loaded-features.packages`).
+
+Why bake at all, when the plugins install fine over SSH:
+- **sysupgrade wipes the overlay**, so every reflash otherwise loses the whole feature
+  set — and under the rolling model reflashing is routine, on a *travel* router that may
+  have no laptop nearby.
+- It makes the **kernel-ABI contract structural instead of procedural**: image and kmods
+  come out of one build, so they cannot disagree. Post-flash installation relies on the
+  operator pairing the right offline repo with the right image, which can fail silently.
+
+The clean base keeps its `forbidden_packages` guard; the loaded image gets the **inverse**
+check (every listed plugin, plus the `h5000m-modem-atd` dependency, must be present), so a
+loaded image that silently shipped without its features fails the build.
+
 **Status legend:** ✅ done · 🔄 in progress · ⛔ blocked · ⬜ not started
 
 ---

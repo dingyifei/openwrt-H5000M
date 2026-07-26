@@ -1,0 +1,14 @@
+# Top-level H5000M plugin packages baked into the OPTIONAL "loaded" image.
+# The clean official base never contains these - it is built and asserted first, and the
+# forbidden-package check guarantees they did not leak into it. This list applies only to
+# the second artifact produced when H5000M_LOADED_IMAGE=1.
+#
+# Only top-level packages belong here. Their dependencies (the AT broker, and the in-feed
+# packages such as kmod-usb-serial-option, kmod-usb-net-rndis, 464xlat, kmod-nat46, lpac,
+# travelmate, tailscale, mwan3 and the LuCI apps) are resolved by apk from the signed
+# plugin repo plus the official feeds.
+h5000m-fm350
+h5000m-lpac
+h5000m-travelmate-defaults
+h5000m-tailscale-defaults
+h5000m-mwan3-policy
