@@ -121,6 +121,32 @@ tom_modem -d /dev/ttyUSB1 -c "AT+COPS?"    -t 4    # want: an operator name, e.g
 > and silently black-holes traffic while still reporting `+CEREG: 0,1`. Use this table
 > only as an optimisation after a blank attach, and never fall back to a guessed
 > "common default" like `internet`.
+>
+> Full table (China + US + travel eSIM), **with per-row confidence**, lives in
+> [`docs/apn-reference.md`](docs/apn-reference.md).
+
+### Four findings that shape any implementation (2026-07-26)
+
+1. **Set the ATTACH APN, not just CID 1.** On LTE/5G the APN governing attach is the
+   **initial EPS bearer**, so `AT+CGDCONT=1,…` alone may not affect it. On Fibocom that is
+   **`AT+EIAAPN`** — which is *also* the only way to supply PAP/CHAP, because **this modem
+   has no `+CGAUTH`** (absent from the AT manual; QModem's mediatek branch has no auth block
+   at all, unlike its qualcomm/lte/unisoc/huawei branches). Set both `EIAAPN` and
+   `CGDCONT=1`, and confirm on hardware which actually takes effect.
+2. **An eSIM profile does not carry an APN.** The GSMA/TCA SAIP profile ASN.1 has no
+   `ef-apn`/PDP-context element; the only APN-related file is optional **`EF_ACL`**, a
+   *restriction allow-list* (TS 31.102 §4.2.48) — not a default-APN source. Phones "just
+   work" thanks to a device-side carrier database (Android `apns-conf.xml`, iOS carrier
+   bundles) that a router does not have. Travel eSIMs work blank because they are
+   home-routed and the **issuer's HSS** supplies the default.
+3. **A single-family grant is SUCCESS — never re-dial on it.** Requesting `IPV4V6` and
+   receiving IPv4-only or IPv6-only is an *accept* carrying ESM cause #50/#51/#52, not a
+   reject (TS 24.301 §6.2.2). The documented real-world failure here is **host-side**:
+   ModemManager treated "activated with NwError=50" as a failure, tore down a working bearer
+   and retried, causing connect/disconnect churn. Do not build PDP-type retry logic.
+4. **464XLAT is mandatory for T-Mobile US.** Their core is IPv6-only and the FM350's Intel
+   XMM **does not run CLAT itself**, so without `464xlat` + `kmod-nat46` on the *router*,
+   IPv4 silently fails and looks exactly like a wrong APN.
 
 ---
 

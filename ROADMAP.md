@@ -72,24 +72,32 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
 - ⚠️ Two corrections annotated in that file: its "MBIM recommended" verdict is **obsolete**
   (see below), and the `kmod-usb-net-rndis-host` rename warning appears **mistaken**.
 
-## Stage 0 — Base tuning + reflash
-- ⬜ Wi-Fi/forwarding defaults in `90-h5000m-base`: `country=AU` (measured: 5 GHz disabled
-  channels 16 → 7, unlocking the DFS band 100–144 that CN blocks), `tx_burst=2.0`,
-  `packet_steering=1`, `flow_offloading{,_hw}=1` — with matching build assertions.
-- ⬜ `OPENWRT_ROLLING=1` build; record revision/kernel/ABI as the **kmod contract**; flash.
-- **Why now:** device is on r35420/kernel 6.18.38 but feeds are 6.18.39+; kmods are
-  ABI-locked, so FM350 drivers from today's feed cannot load until we reflash.
+## Stage 0 — Base tuning + reflash — ✅ DONE (2026-07-26)
+- ✅ Wi-Fi/forwarding defaults in `90-h5000m-base`, each with a matching build assertion:
+  `country=AU` — **measured on-device: 5 GHz disabled channels 16 → 7**, unlocking the DFS
+  band (ch 100–144) that CN blocks; `tx_burst=2.0`; `packet_steering=1`;
+  `flow_offloading{,_hw}=1` (confirmed active: `flowtable ft { flags offload`).
+- ✅ Rolling build + flash. **kmod contract: `r35533-3b2bc55dcb`, kernel `6.18.39`,
+  ABI `38ca7baf52c71e940d7f3ce0e127bcc9`, `aarch64_cortex-a53`.**
+- ✅ **Factory partition survived sysupgrade** — no `eeprom load fail`; only the overlay reset.
+- ⚠️ TX power is a no-op on this unit, so AU buys **channel choice, not power**.
+- ⚠️ Offloaded flows bypass netfilter → **re-validate flow offloading when mwan3 lands**;
+  if failover misroutes, set both flags back to `0`.
+- ⬜ Throughput before/after **not** measured (no `iperf3` on base, no uplink yet) — deferred.
 
-## Stage 1 — Plugin pipeline (the old "Phase 1")
-- ⬜ Implement `configure-sdk` / `build-packages` / `build-offline-repo` /
-  `verify-offline-install` / `check-secrets` in `openwrt-H5000M-plugins` (scaffolded, pushed).
-- **Milestone M1:** `h5000m-travelmate-defaults` built → signed → offline repo → installed
-  into the exact base rootfs with `--network none`, no `--allow-untrusted`, negative
-  controls failing as required.
-- Key findings: the **SDK signs each APK** (unlike the buildbot) so the dev loop needs no
-  `--allow-untrusted`; **`feeds.buildinfo`** pins all feeds per-run, giving rolling
-  determinism; official indexes are ~1.4 MB so we ship them **byte-identical** and let the
-  device verify OpenWrt's own signatures.
+## Stage 1 — Plugin pipeline — ✅ DONE, M1 VERIFIED (2026-07-26)
+- ✅ `configure-sdk` / `build-packages` / `build-offline-repo` / `verify-offline-install` /
+  `check-secrets` / signing-key gate implemented in `openwrt-H5000M-plugins`.
+- ✅ **M1 passed end to end:** `h5000m-travelmate-defaults` built → signed → offline repo →
+  installed into the exact base rootfs with `--network none`, **no `--allow-untrusted`**,
+  alongside 4 OpenWrt-signed packages, using only the firmware's embedded anchors.
+  **All 4 negative controls failed as required** (empty keys-dir, corrupted `.apk`,
+  untrusted signer, absent package).
+- Verified findings: the **SDK signs each APK** (unlike the buildbot) so the dev loop needs
+  no `--allow-untrusted`; **`feeds.buildinfo`** pins all feeds per-run; official indexes are
+  ~1.4 MB and **superset indexes work**, so we ship them byte-identical and the device
+  verifies OpenWrt's own signatures rather than us re-attesting them.
+  See `../openwrt-H5000M-plugins/docs/apk-tooling-findings.md`.
 
 ## Stage 2 — Features (in-feed packages + one small custom package each)
 - ⬜ **2.1 Travelmate** — `h5000m-travelmate-defaults`; one disabled `mode='sta'` VIF →
