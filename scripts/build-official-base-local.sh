@@ -323,19 +323,32 @@ if [ "${H5000M_LOADED_IMAGE:-0}" = 1 ]; then
     exit 1
   }
 
-  # Kernel-ABI gate. A kmod built against a different kernel will install happily and then
-  # fail to load at boot, which is exactly the silent failure the rolling model invites.
-  # Assert every kmod in the plugin repo names this image's kernel version.
-  while IFS= read -r kmod; do
-    case "$(basename "${kmod}")" in
-      *"${OPENWRT_KERNEL}"*) ;;
-      *)
-        echo "Plugin repo kmod $(basename "${kmod}") was not built for kernel ${OPENWRT_KERNEL}." >&2
-        echo "Rebuild the plugin offline repo against this base before baking it in." >&2
-        exit 1
-        ;;
-    esac
-  done < <(find "${H5000M_PLUGIN_REPO}" -name 'kmod-*.apk' -print)
+  # Kernel-ABI gate. A kmod built against a different kernel ABI installs happily and then
+  # fails to load at boot - the silent failure the rolling model invites.
+  #
+  # Compare the ABI, not the kernel version. kmod .apk filenames carry only the version
+  # (kmod-nat46-6.18.39.…), and the ABI hash changes independently of it: r35533 and r35551
+  # are BOTH kernel 6.18.39 but have ABIs 38ca7baf… and b4cc7b02…. A filename check passes
+  # in that case and the mismatch only surfaces later as missing .ko files during
+  # prepare_rootfs - or, worse, as a booted image whose modules never load.
+  plugin_provenance="${H5000M_PLUGIN_REPO}/PROVENANCE.txt"
+  [ -f "${plugin_provenance}" ] || {
+    echo "Plugin repo has no PROVENANCE.txt; cannot confirm its kernel ABI." >&2
+    exit 1
+  }
+  plugin_abi="$(sed -n 's/^kernel_abi=//p' "${plugin_provenance}" | head -1)"
+  plugin_rev="$(sed -n 's/^revision=//p' "${plugin_provenance}" | head -1)"
+  [ -n "${plugin_abi}" ] || {
+    echo "Plugin repo PROVENANCE.txt records no kernel_abi." >&2
+    exit 1
+  }
+  if [ "${plugin_abi}" != "${OPENWRT_KERNEL_ABI}" ]; then
+    echo "Plugin repo kernel ABI does not match this base:" >&2
+    echo "  plugin repo : ${plugin_rev:-?} abi=${plugin_abi}" >&2
+    echo "  this image  : ${OPENWRT_REVISION} abi=${OPENWRT_KERNEL_ABI}" >&2
+    echo "Rebuild the plugin offline repo against this base before baking it in." >&2
+    exit 1
+  fi
 
   # Trust our signing key for the duration of the image build. This is the same key the
   # firmware already embeds at /etc/apk/keys/h5000m-plugins.pem, so nothing new is being

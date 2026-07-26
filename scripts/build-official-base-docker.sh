@@ -80,5 +80,37 @@ docker run --rm --init \
       exit 1
     }
     umask 022
+
+    # Stage the repository into writable space with tar, and build from the staged copy.
+    #
+    # On Apple Silicon the emulated linux/amd64 container MISCOPIES files read from the
+    # read-only bind mount: coreutils cp and install produce a file of the correct size
+    # with the wrong contents, deterministically (they use the copy_file_range/sendfile
+    # fast path, which the emulation gets wrong). cat, tar and dd - plain read/write - are
+    # correct. This is not academic: ImageBuilder copies our FILES= payload off that same
+    # mount, so a locally built image could ship a corrupted uci-defaults script or, worse,
+    # a corrupted /etc/apk/keys trust anchor at exactly the right size, and still pass
+    # every presence check the build makes.
+    #
+    # Building from a writable staged copy makes every downstream cp - ours and
+    # ImageBuilder is own - read from a path that copies correctly. The /workspace mount
+    # stays read-only, so the guarantee asserted above is unchanged.
+    mkdir -p /tmp/repo
+    tar -cf - -C /workspace --exclude=./artifacts . | tar -xf - -C /tmp/repo
+
+    # Verify the staged tree byte-for-byte. Silent corruption is the whole risk here, so a
+    # copy we did not check is worth very little. md5sum reads normally and is unaffected.
+    ( cd /workspace && find . -path ./artifacts -prune -o -type f -print0 | sort -z |
+        xargs -0 md5sum ) > /tmp/src.md5
+    ( cd /tmp/repo   && find . -path ./artifacts -prune -o -type f -print0 | sort -z |
+        xargs -0 md5sum ) > /tmp/stage.md5
+    if ! cmp -s /tmp/src.md5 /tmp/stage.md5; then
+      echo "Staged repository copy does not match the source tree:" >&2
+      diff /tmp/src.md5 /tmp/stage.md5 | head -20 >&2
+      exit 1
+    fi
+    echo "Staged $(wc -l < /tmp/src.md5) files into /tmp/repo; checksums match."
+
+    cd /tmp/repo
     exec ./scripts/build-official-base-local.sh
   '
