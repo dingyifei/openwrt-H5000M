@@ -48,8 +48,17 @@ source "${BASE_ENV}"
 [ "${OPENWRT_PROFILE}" = "hiveton_h5000m" ]
 [ "${OPENWRT_TARGET}" = "mediatek/filogic" ]
 [ "${OPENWRT_ARCH}" = "aarch64_cortex-a53" ]
-[ "${OPENWRT_KERNEL}" = "6.18.38" ]
-[ "${OPENWRT_KERNEL_ABI}" = "45144f660449efe7168d085e7f599cf8" ]
+# Kernel and ABI are pinned in configs/official-base.env and MOVE with the snapshot, so
+# they are validated by shape, not by value. Hardcoding them duplicated the pin in a second
+# place: re-pinning the base to r35533 (kernel 6.18.39) left this asserting 6.18.38, and
+# because these are bare [ ] tests under `set -e` the build died with NO message at all -
+# silently, before printing a single line. A guard that fails without saying why is worse
+# than no guard. The base build itself asserts that the image's real kernel and ABI match
+# these values, which is the check that actually matters.
+[[ "${OPENWRT_KERNEL}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || { echo "OPENWRT_KERNEL is not a kernel version: ${OPENWRT_KERNEL}" >&2; exit 1; }
+[[ "${OPENWRT_KERNEL_ABI}" =~ ^[0-9a-f]{32}$ ]] \
+  || { echo "OPENWRT_KERNEL_ABI is not a 32-hex ABI hash: ${OPENWRT_KERNEL_ABI}" >&2; exit 1; }
 [[ "${H5000M_PLUGIN_KEY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
 
 # The pinned feed-lock environment must carry a coherent, well-formed identity so

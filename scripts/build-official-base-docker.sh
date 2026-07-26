@@ -31,9 +31,18 @@ docker build \
   --tag "${BUILDER_IMAGE}" \
   "${ROOT_DIR}"
 
-# Optional "loaded" image: base + signed plugins. The plugin repo lives outside this
-# repository, so it needs its own read-only mount, and the in-container path is what the
-# build script must see - a host path would be meaningless inside the container.
+# Forward the build-mode switches. Without this there is no way to ask the containerised
+# build for a PINNED build: the wrapper forwards almost nothing, so OPENWRT_ROLLING set on
+# the host never reached the script and every docker build silently tracked the live
+# snapshot. That matters on a slow uplink - rolling re-downloads a 553 MB ImageBuilder and
+# a 248 MB SDK every time the mirror moves, which is long enough to lose the race and end
+# up with base and plugins built against different kernel ABIs.
+MODE_ARGS=()
+for v in OPENWRT_ROLLING OPENWRT_OFFLINE; do
+  eval "val=\${${v}:-}"
+  [ -n "${val}" ] && MODE_ARGS+=(--env "${v}=${val}")
+done
+
 LOADED_ARGS=()
 if [ "${H5000M_LOADED_IMAGE:-0}" = 1 ]; then
   : "${H5000M_PLUGIN_REPO:?H5000M_LOADED_IMAGE=1 requires H5000M_PLUGIN_REPO=<plugins>/offline-repo}"
@@ -59,6 +68,7 @@ docker run --rm --init \
   --env HOME=/tmp \
   --env OPENWRT_LOCAL_CACHE=/cache \
   --env OPENWRT_LOCAL_ARTIFACTS=/artifacts \
+  "${MODE_ARGS[@]}" \
   "${LOADED_ARGS[@]}" \
   --mount "type=bind,source=${ROOT_DIR},target=/workspace,readonly" \
   --mount "type=bind,source=${CACHE_ROOT},target=/cache" \
