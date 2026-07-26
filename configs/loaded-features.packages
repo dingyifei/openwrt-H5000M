@@ -13,6 +13,9 @@ h5000m-fm350
 # protocol type" and offers no form at all - verified missing from the r35551 loaded image.
 luci-proto-fm350
 h5000m-lpac
+# SMS over the modem's single AT port, via sms_tool run under at-lease. sms_tool itself
+# comes from the official feed and handles PDU/UCS2/multipart, so this ships no codec.
+h5000m-sms
 h5000m-travelmate-defaults
 h5000m-tailscale-defaults
 h5000m-mwan3-policy
