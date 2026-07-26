@@ -429,3 +429,59 @@ at-lease lpac chip info     # hand the port to a foreign tool for its whole life
   would die silently.
 - **The modem keeps its APN in its own NVRAM across a router reflash.** A clean image does
   not imply a clean modem: context 1 still held the vendor's `ctnet` on our fresh base.
+
+---
+
+# 11. The cid-1 / IMS deadlock (measured 2026-07-26, working CT consumer SIM)
+
+Tested on the clean OpenWrt base with a **working consumer China Telecom SIM**
+(IMSI `46011…`), firmware `81600.0000.00.29.21.24`, `GTUSBMODE 41`.
+
+**The modem is healthy and fully attached.** `+CPIN: READY`, `+CEREG: 0,1`,
+`+CGATT: 1`, `+COPS: 0,2,"46011",11` (NR5G). None of what follows is a SIM,
+signal or registration problem.
+
+## What the network provisions on attach
+
+| cid | APN | State |
+|---|---|---|
+| 1 | `IMS` | **active, IPv6-only** — `+CGCONTRDP: 1,,"IMS",…`, `+CGPADDR: 1,"0.0.0.0.0.0.0.0.24.197…"` |
+| 2 | (defined `ctiot`) | inactive until activated; the network actually grants **`ctnet`** |
+
+## The deadlock
+
+- `AT+CGACT=1,1` while attached → **`+CME ERROR: 5847`**. Context 1 cannot be
+  re-activated because the network already holds it for IMS.
+- `AT+CGACT=1,2` → **succeeds**: `+CGEV: ME PDN ACT 2`, `+CGACT: 2,1`.
+  `AT+CGPADDR=2` → `10.87.138.159` (real IPv4 + IPv6);
+  `AT+CGCONTRDP=2` → APN **`ctnet`**, DNS `222.66.251.8` / `116.236.159.8`.
+  So a perfectly good data bearer is available — on cid 2.
+- But configuring `eth2` with that address and routing through it gives
+  **tx=3, rx=0** — the documented black-hole signature. `eth2` has `carrier=1`,
+  so the link is up; the modem simply does not forward cid 2 over RNDIS.
+
+**This confirms the cid-1 constraint rather than refuting it.** RNDIS is bound to
+context 1 only. The problem is that on this network context 1 is taken by IMS, so
+the one context RNDIS will forward is the one we cannot have.
+
+## Why the usual escape hatch does not work here
+
+The vendor recipe is `CFUN=4` → `CGDCONT=1,"IPV4V6","<apn>"` → `CFUN=1`, which
+re-attaches with the new cid-1 definition. On this firmware that still ends with
+IMS on cid 1 and `CGACT=1,1` failing. And the documented alternative for setting
+the **initial/attach** APN, `AT+EIAAPN`, **does not exist on this firmware**
+(`+CME ERROR`), as does `AT+GTRNDIS` (`+CME ERROR: unknown`), so there is no
+supported way to rebind RNDIS to another cid.
+
+> ⚠️ Timing matters when re-provisioning: `AT+CEREG?` keeps reporting the
+> pre-detach state for several seconds after `AT+CFUN=4`. Writing `CGDCONT`
+> before the detach lands reproduces `+CME ERROR: 5847`, and a registration wait
+> started too early returns instantly on a stale "registered". Wait for `CEREG`
+> to leave the registered state before reprovisioning.
+
+## Open question
+
+How to stop the network placing IMS on cid 1 — e.g. changing the UE mode of
+operation (`AT+CEMODE`) or disabling IMS/VoLTE so the data bearer lands on cid 1.
+**Unverified**; do not treat any specific command here as known-good until it has
+been read out of the Fibocom AT manual and tested.
