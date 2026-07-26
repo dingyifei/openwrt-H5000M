@@ -31,6 +31,24 @@ docker build \
   --tag "${BUILDER_IMAGE}" \
   "${ROOT_DIR}"
 
+# Optional "loaded" image: base + signed plugins. The plugin repo lives outside this
+# repository, so it needs its own read-only mount, and the in-container path is what the
+# build script must see - a host path would be meaningless inside the container.
+LOADED_ARGS=()
+if [ "${H5000M_LOADED_IMAGE:-0}" = 1 ]; then
+  : "${H5000M_PLUGIN_REPO:?H5000M_LOADED_IMAGE=1 requires H5000M_PLUGIN_REPO=<plugins>/offline-repo}"
+  [ -d "${H5000M_PLUGIN_REPO}" ] || {
+    echo "H5000M_PLUGIN_REPO=${H5000M_PLUGIN_REPO} is not a directory." >&2
+    exit 1
+  }
+  PLUGIN_REPO_ABS="$(cd "${H5000M_PLUGIN_REPO}" && pwd)"
+  LOADED_ARGS=(
+    --env H5000M_LOADED_IMAGE=1
+    --env H5000M_PLUGIN_REPO=/plugin-repo
+    --mount "type=bind,source=${PLUGIN_REPO_ABS},target=/plugin-repo,readonly"
+  )
+fi
+
 docker run --rm --init \
   --platform linux/amd64 \
   --user "${HOST_UID}:${HOST_GID}" \
@@ -41,6 +59,7 @@ docker run --rm --init \
   --env HOME=/tmp \
   --env OPENWRT_LOCAL_CACHE=/cache \
   --env OPENWRT_LOCAL_ARTIFACTS=/artifacts \
+  "${LOADED_ARGS[@]}" \
   --mount "type=bind,source=${ROOT_DIR},target=/workspace,readonly" \
   --mount "type=bind,source=${CACHE_ROOT},target=/cache" \
   --mount "type=bind,source=${ARTIFACT_ROOT},target=/artifacts" \
