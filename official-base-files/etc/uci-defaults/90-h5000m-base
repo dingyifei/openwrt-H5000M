@@ -82,7 +82,12 @@ fi
 # reproduce; these are the in-tree equivalents.
 #
 # packet_steering spreads network softirq work across the MT7987's 4 cores.
-uci -q set network.globals.packet_steering='1'
+# '2' = steer to ALL CPUs (including the one taking interrupts). Measured on-device:
+# with '1' each interface got a single core (eth0 rps_cpus=4, wifi=2) and all 12 mt76
+# NAPI threads sat on CPU3; with '2' every interface reports rps_cpus=f (all 4 cores).
+# mt76 threaded NAPI is already enabled by the driver (napi_threaded=1), so this is the
+# part that was actually missing.
+uci -q set network.globals.packet_steering='2'
 
 # Flowtable offload (software + in-tree PPE hardware path).
 # CAUTION: offloaded flows bypass netfilter, which can defeat fwmark-based

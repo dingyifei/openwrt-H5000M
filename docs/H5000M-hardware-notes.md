@@ -31,12 +31,50 @@ assertion in `build-official-base-local.sh`.
 |---|---|---|
 | `country` | `AU` (was `CN`) | **Disabled 5 GHz channels 16 → 7** — unlocks the DFS band **ch 100–144** that CN blocks. Verified twice: live `iw reg set` A/B before the change, and post-flash. ⚠️ Raises the regulatory *ceiling* only — TX power on this unit is a confirmed no-op, so this buys **channel choice, not output power**. |
 | `tx_burst` | `2.0` | Real mac80211 option → hostapd `tx_queue_data2_burst`. Independent of calibration. |
-| `packet_steering` | `1` | 4-core MT7987; spreads network softirq work. |
+| `packet_steering` | **`2`** | `2` = steer to **all** CPUs. Measured: with `1`, each interface got a *single* core (`eth0` rps_cpus=4, wifi=2) and all 12 mt76 NAPI threads were pinned to CPU3; with `2` every interface reports `rps_cpus=f` (all 4 cores). |
 | `flow_offloading` / `_hw` | `1` / `1` | **Active** — `nft list table inet fw4` shows `flowtable ft { flags offload`. The in-tree PPE equivalent of the vendor's MediaTek HNAT/WED (which the official mt76 base cannot reproduce). |
 
 ⚠️ **Offloaded flows bypass netfilter**, which can defeat fwmark-based policy routing.
 **Re-validate when mwan3 lands**; if failover misroutes established connections, set both
 flow-offload flags back to `0` — correct failover is worth more than throughput.
+
+### mt76 multi-core: threaded NAPI is on; WED is NOT available (tested 2026-07-26)
+
+| Item | State |
+|---|---|
+| **mt76 threaded NAPI** | ✅ **On by default** — `/sys/kernel/debug/ieee80211/phy0/mt76/napi_threaded` = `1`, 12 NAPI kernel threads (`[napi/phy0-0]`, `[napi/mtk_eth-0]`). Nothing to enable. |
+| **Core spreading** | ✅ Fixed by `packet_steering=2` (see above). |
+| **WED (Wireless Ethernet Dispatch)** | ⛔ **Not achievable on the official base.** |
+
+**WED — tested and rejected, don't re-investigate.** The hardware is present (DT node
+`wed@15010000`, compatible `mediatek,mt7987-wed`) and the driver knob exists
+(`/sys/module/mt7996e/parameters/wed_enable`, default `N`). Setting
+`mt7996e wed_enable=1` in `/etc/modules.d/mt7996e` and rebooting **does** take effect, and
+mt7996e **does** attempt the attach — but it fails:
+
+```
+mt7996e 0000:01:00.0: attaching wed device 0 version 3
+platform 15010000.wed: failed to attach wed device
+```
+
+Root cause: **no WED platform driver is registered at all.** WED lives in
+`CONFIG_NET_MEDIATEK_SOC_WED`, part of `mtk_eth_soc`, which is **built into the kernel**
+(absent from `/proc/modules`) — and it is not compiled into the official filogic build.
+There is also **no WED kmod in the feed**. So it cannot be added by ImageBuilder or by any
+plugin package; it would require building OpenWrt from source with a custom kernel config,
+abandoning the official-base architecture. Reverted; Wi-Fi was unaffected either way.
+
+> ⚠️ **"The stock firmware had WED" is not evidence this works.** Stock ran MediaTek's
+> closed `mt_wifi7` driver with `kmod-mtk_wed` — an entirely different code path from
+> upstream `mt7996e`. Hardware support ≠ upstream driver support.
+
+**Consequence:** Wi-Fi traffic gets **no hardware offload**. The nftables flowtable covers
+only `{eth0, eth1}`, so ethernet↔ethernet forwarding is PPE-accelerated while Wi-Fi↔WAN
+forwarding is handled in software. On a travel router that is most of the traffic.
+
+**To re-test cheaply after a future snapshot** (rolling means kernels change): put
+`mt7996e wed_enable=1` in `/etc/modules.d/mt7996e`, reboot, then
+`dmesg | grep -i wed`. If "failed to attach" is gone, the kernel gained WED support.
 
 > Throughput before/after was **not** measured: the base ships no `iperf3`, and the
 > forwarding path can't be exercised meaningfully with `eth1` unplugged and no cellular

@@ -208,7 +208,7 @@ grep -q 'encryption=sae-mixed' <<<"${base_defaults}"
 # CN blocks (measured: 16 -> 7 disabled 5 GHz channels).
 grep -Fq 'uci -q set "${radio}.country=AU"' <<<"${base_defaults}"
 grep -Fq 'uci -q set "${radio}.tx_burst=2.0"' <<<"${base_defaults}"
-grep -q "packet_steering='1'" <<<"${base_defaults}"
+grep -q "packet_steering='2'" <<<"${base_defaults}"
 grep -q "flow_offloading='1'" <<<"${base_defaults}"
 grep -q "flow_offloading_hw='1'" <<<"${base_defaults}"
 grep -Fq 'uci -q set "${radio}.disabled=0"' <<<"${base_defaults}"
