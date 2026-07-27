@@ -741,7 +741,41 @@ returns a real EID. That is the proof.
 channel, and without switching anything** if the eUICC happens to be the active slot. It
 is the cheapest possible probe and should be the first thing any eSIM tooling runs.
 
-## ⛔ lpac cannot currently drive this eUICC
+## ⭐ lpac CAN drive this eUICC — corrected 2026-07-28
+
+**The section below is superseded.** It concluded that `AT+CCHO` returning ERROR left the
+eUICC unreachable. That was wrong, and the correction matters because it turns a dead end
+back into a scoped task.
+
+ISD-R is reachable over plain **`AT+CSIM`**: you issue MANAGE CHANNEL yourself instead of
+asking the modem for a logical channel. lpac issue **#394** has a verbatim trace from an
+FM350-GL doing exactly this, ending in a complete `lpac chip info`:
+
+```
+AT+CSIM=10,"0070000001"                                 -> +CSIM: 6,"019000"
+AT+CSIM=42,"01a4040010a0000005591010ffffffff8900000100" -> +CSIM: 236,"6F7284..."
+```
+
+**The blocker was lpac's version, not the modem.** OpenWrt pins lpac v2.3.0 (tagged
+2025-08-15); `at_csim` landed 2025-10-12 and is in no tagged release yet. So `LPAC_APDU=
+at_csim` reporting "No APDU driver found" was accurate about the symptom and misleading
+about the cause.
+
+Two corrections to reasoning used elsewhere in this document:
+
+- **`AT+CCHO=?` returning OK proved nothing.** On Fibocom firmware the test form and real
+  support are decoupled in *both* directions (lpac #300) — the same trap that produced the
+  earlier wrong conclusion about `AT+EIAAPN`.
+- FM350-GL is the **inverse** of the usual case. Most basebands filter channel management
+  out of `+CSIM` per SEEK-for-Android guidance, which is why this trick fails on Quectel
+  EG25 and Huawei MS2372h. This modem leaves `+CSIM` unfiltered.
+
+The route needs no toolchain and no source build — lpac's `stdio` APDU backend is compiled
+in unconditionally, so a bridge speaking its ndJSON protocol over `AT+CSIM` under `at-lease`
+suffices. See `ROADMAP.md` 2.4 for the full plan and the expected downstream blocker at
+ES9+ `authenticateClient`.
+
+## ⛔ lpac cannot currently drive this eUICC *(superseded — see above)*
 
 Two separate blockers, found in order:
 
@@ -1078,6 +1112,87 @@ while [ "$_left" -gt 0 ]; do … ; _left=$(( _left - 5 )); sleep 5; done
 
 `tests/test-plugin-invariants.sh` now fails on `date +%s` anywhere under `files/usr/sbin` or
 `files/usr/lib`.
+
+## Radio control: what exists, what does not, and the traps
+
+Established 2026-07-28 from the AT manual plus a live `AT+CLAC` — see
+`docs/at-capture-2026-07-28.md` for the raw captures the parsers were written against.
+
+| Want | Command | State |
+|---|---|---|
+| Lock to bands | `AT+GTACT` §11.1.14 | ✅ works, and is what the UI drives |
+| Nearby cells | `AT+GTCCINFO?` §11.1.15 | ✅ serving + up to 10 neighbours per RAT |
+| MIMO / CA | `AT+GTCAINFO?` §11.1.16 | ✅ but see the field-count trap below |
+| SIM slot | `AT+GTDUALSIM` §4.3 | ✅ **persistent in firmware**, and destructive |
+| Change APN | `+CGDCONT` / `+EAPNACT` | ✅ already in the dialer |
+| Lock to PCI / EARFCN / SCS | — | ❌ **no command** |
+| QCI / 5QI | — | ❌ **no command** |
+| TTL | — | ❌ **no command** — done router-side |
+
+**There is no cell lock on this modem.** The `^LTEFREQLOCK` / `^NRFREQLOCK` code in this
+repo's git history (deleted in `b415a09`) is **Huawei syntax for the MT5700M**, a different
+modem family that `ROADMAP.md` already lists as a non-goal. `AT+CLAC` does reveal three
+undocumented cell-related commands — `+EFCELL`, `+ECELL`, `+ENBR` — which appear in neither
+the manual nor any public source. Their set syntax is unknown and **was not guessed**;
+guessing is what wedged this modem before. Band lock plus the cell viewer is the substitute:
+you can see which bands nearby cells use and act on that.
+
+### ⚠️ `AT+GTACT` fields 2 and 3 are preferences, not bands
+
+```
+AT+GTACT=<rat>,<PreferredAct1>,<PreferredAct2>[,<band>...]
+```
+
+`AT+GTACT=20,103` is rejected — it puts a band number where only 2/3/6 are accepted. And the
+empty form the manual's brackets imply, `AT+GTACT=20,,,103`, is **also** rejected on this
+firmware (`+CME ERROR: phone failure`), so the preferences cannot be omitted either. Carry
+forward whatever `AT+GTACT?` currently reports.
+
+RAT: 1 UMTS, 2 LTE, 4 LTE/UMTS, 10 automatic, 14 NR, 16 NR/UMTS, 17 NR/LTE, 20 NR/LTE/UMTS.
+Preference: 2 UMTS, 3 LTE, 6 NR.
+
+### ⚠️ Band sets are per-RAT and partial
+
+Manual Note 5, confirmed here: setting LTE bands narrows **only** the LTE list.
+`AT+GTACT=20,6,3,103` left `20,6,3,1,2,4,5,8,103,501,502,…` — LTE pinned to B3 while every
+NR band stayed enabled. **"Lock to B3" is not one command**; without also constraining the
+RAT the modem is still free to sit on 5G. Any revert must therefore restore the *whole*
+previous parameter string, not just the bands that were changed.
+
+### Band numbering is not a bitmask
+
+`AT+GTACT` takes a flat integer list (`+EPBSEH` is the bitmask one). LTE band *N* → `100+N`.
+NR band *N* → the literal digits `50` followed by *N*, so n1 = `501` and n20 = `5020` —
+**not** `500+N`. Build the picker from `AT+GTACT=?`, which on this radio reports 31 LTE and
+19 NR bands; a hard-coded B1–B71 range would offer bands the hardware does not have.
+
+### ⚠️ `AT+GTCAINFO?` returns ten fields where the manual documents eight
+
+Observed `PCC:103,187,1650,100,100,2,1,2,1,-97`. The manual's PCC form omits
+`<ul_bandwidth>` and the trailing RSRP. Order is band, PCI, EARFCN, DL BW, UL BW, **dl_mimo,
+ul_mimo**, dl modulation, ul modulation, RSRP. The modulation codes are shown raw everywhere
+in this project: no authoritative code→QAM mapping exists for this modem, and a mislabelled
+"256QAM" would be worse than an honest integer.
+
+### ⚠️ `AT+GTDUALSIM?` puts a space before its colon
+
+`+GTDUALSIM : 0, "SUB1", "L"`. A regex anchored on `+GTDUALSIM:` matches nothing.
+
+### The guard, and why writes do not go through `atq`
+
+`fm350-radio` is a procd one-shot that owns apply → verify → revert. It takes the interface
+down first (so the dialer is not simultaneously fighting for the port and racing its own
+registration timer), applies, waits for registration, brings the interface back up, and
+**verifies against data, not registration** — a slot switch once registered perfectly while
+every PDP activation returned `+CME ERROR: 5848`. On failure it restores the previous string
+and brings the link back. UCI is written only *after* data is confirmed, so a persisted lock
+is by construction one that has carried traffic.
+
+Measured: locking LTE-only to B14 (no coverage here) spent 45 s unregistered, then reverted
+itself and the link returned.
+
+`atq` refuses `AT+GTACT=` and `AT+GTDUALSIM=` while still allowing `AT+GTACT=?`, so the
+guard cannot be sidestepped. The `=?` arm is ordered first because first match wins.
 
 ## ⛔ The USB `authorized` window must outlive its caller
 

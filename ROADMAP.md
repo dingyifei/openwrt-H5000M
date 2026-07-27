@@ -163,7 +163,8 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
     `configs/loaded-features.packages`, where the build's manifest assertion enforces it.
   - ⬜ Throughput/failover measurement deferred until `eth1` is connected.
 
-- 🔄 **2.4 eSIM — eUICC CONFIRMED PRESENT, lpac blocked (2026-07-26).** C15 is closed.
+- 🔄 **2.4 eSIM — eUICC present and REACHABLE; scoped, not blocked (updated 2026-07-28).**
+  C15 is closed.
   - ⭐ **This unit has a built-in eUICC.** The Hardware Guide §3.5 states the FM350
     "supports dual SIM, one is a built-in eSIM"; measured, `AT+GTDUALSIM=?` → `(0-1)`, and
     switching to slot 1 makes `AT+EID` return a real 32-digit EID. It reports
@@ -176,9 +177,41 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
     modem lacks. Symptom is a bare "Failed to open device". `h5000m-esim` now calls the
     real binary directly.
   - ⛔ **`AT+CCHO` to the ISD-R AID returns ERROR on both slots**, so lpac's `at` backend
-    cannot reach the applet; `at_csim` is not compiled into the packaged build. Unresolved
-    whether this is because the eUICC is empty or because the firmware never exposes ISD-R
-    that way. MediaTek's `+ESIMS` family is implemented and untried.
+    cannot reach the applet.
+  - ⭐ **RESOLVED 2026-07-28, and in the direction that unblocks this.** The previous entry
+    here asked whether `AT+CCHO` fails because the eUICC is empty or because the firmware
+    never exposes ISD-R. The answer is **neither**: ISD-R is reachable over plain `AT+CSIM`,
+    and the blocker was lpac's *version*, not the modem.
+    - lpac issue **#394** carries a verbatim trace from an FM350-GL (Dell DW5931e-eSIM)
+      whose author reports `AT_CSIM` is the only backend that works for them:
+      ```
+      AT+CSIM=10,"0070000001"                                 -> +CSIM: 6,"019000"
+      AT+CSIM=42,"01a4040010a0000005591010ffffffff8900000100" -> +CSIM: 236,"6F7284..."
+      ```
+      MANAGE CHANNEL over `+CSIM` returns channel `01`, SELECT ISD-R with `CLA=0x01`
+      returns a full FCI, and ES10x then runs. ETSI TS 27.007 §8.17 makes this legal —
+      `+CSIM` passes the command "as it is to the SIM", so you do channel management
+      yourself instead of asking the modem to.
+    - **The real cause of `No APDU driver found`:** OpenWrt pins lpac **v2.3.0** (tagged
+      2025-08-15) and `at_csim` landed in PR #311 on **2025-10-12**. `grep -r at_csim` in
+      the v2.3.0 tarball returns zero hits. It is in no tagged release yet. The earlier
+      claim that it "is not compiled into the packaged build" was right about the symptom
+      and wrong about the cause.
+    - **`AT+CCHO=?` returning OK is not evidence of support.** On Fibocom firmware the test
+      form and real support are decoupled in *both* directions (lpac #300) — the same trap
+      that produced the earlier wrong conclusion about `AT+EIAAPN`.
+    - FM350-GL is the *inverse* of the usual case: most basebands filter channel management
+      out of `+CSIM` per SEEK-for-Android guidance, which is why this fails on Quectel EG25
+      and Huawei MS2372h. **This modem leaves `+CSIM` unfiltered.**
+    - Path forward needs **no toolchain and no source build**, so `configs/sources.lock`
+      is not a blocker: lpac's `stdio` APDU backend is compiled in unconditionally, so a
+      small bridge speaking its ndJSON protocol over `AT+CSIM` under `at-lease` is enough.
+      Prove it first by hand with the two lines above after `AT+GTDUALSIM=1`.
+    - ⚠️ Expect the **download** stage to be the hard part: #394 reached `chip info` and
+      `profile list` but failed at ES9+ `authenticateClient` with a truncated `BF38`. The
+      reporter blamed the card; that is unproven and equally consistent with the transport
+      dropping data across many GET RESPONSE rounds. No public resolution exists.
+    - MediaTek's `+ESIMS` family is implemented and remains untried.
   - ⚠️ **Switching slots broke PDP activation** until the APN type was changed — never
     switch slots on a link you depend on without another way in.
 - ✅ **2.6 AT layer hardening + web UI (2026-07-27).** The modem is now administrable from
