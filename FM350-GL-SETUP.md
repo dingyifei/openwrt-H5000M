@@ -1043,3 +1043,52 @@ Checking once turned a perfectly good SIM into a blocked interface that only a m
 `ifup` cleared. The wait is bounded at 60 s; a PIN/PUK-locked card fails immediately, since
 waiting cannot help. An **absent** SIM still blocks restarts after the timeout — that
 genuinely is not self-correcting.
+
+## ⛔ This board has no RTC — never build a timeout from the wall clock
+
+Measured 2026-07-28: there is no `/dev/rtc*`, `/sys/class/rtc/` is **empty**, and
+`hwclock -r` fails. So the clock starts at the image build date and **sysntpd steps it
+forward the moment the network comes up** — which lands squarely inside the dialer's 120 s
+modem wait.
+
+Any deadline of the shape
+
+```sh
+_end=$(( $(date +%s) + N ))          # ⛔ WRONG on this board
+while [ "$(date +%s)" -lt "$_end" ]; do …
+```
+
+is computed *before* the step and is already in the past *after* it. The loop then exits on
+its very first check. In the dialer that meant an instant `NO_MODEM` + `proto_block_restart`
+— cellular down until a human ran `ifup`, with nothing in the log to suggest the clock was
+involved. Five loops shipped this way, in `fm350-dialer` (modem, SIM, registration waits) and
+in `atio.sh` (`at_exec`'s read loop and `at_probe`'s output wait). `at_probe` is the nastiest:
+discovery runs at boot, exactly when the step happens, so a live AT port gets marked dead.
+
+**Count down instead**, the idiom `at_flock_wait` already used:
+
+```sh
+_left=$N
+while [ "$_left" -gt 0 ]; do … ; _left=$(( _left - 5 )); sleep 5; done
+```
+
+> ⚠️ In a **read** loop, decrement only when the read actually *timed out*. Charging every
+> iteration truncates long replies — `AT+CLAC` returns 37 lines and would be cut off well
+> before `OK`. An endlessly chatty port stays bounded by the outer `timeout(1)`.
+
+`tests/test-plugin-invariants.sh` now fails on `date +%s` anywhere under `files/usr/sbin` or
+`files/usr/lib`.
+
+## ⛔ The USB `authorized` window must outlive its caller
+
+The 0→1 toggle is the only recovery for a deaf AT port, but it has an ~8 s window during which
+the router has no cellular hardware at all. LuCI ran that window as a backgrounded `popen()`
+from the rpcd backend, which left it **in rpcd's process group**. LuCI restarts rpcd on package
+install and on some config applies; a `SIGTERM` to that group mid-window would strand the modem
+at `authorized=0` **permanently** — only a power cycle recovers it. The recovery tool could
+cause the fault it exists to repair.
+
+It now lives in `/usr/sbin/fm350-usb-reset`, which detaches with `setsid` (a busybox applet, so
+always present) into its own session, and **re-authorises from a trap** so even a directly
+targeted kill puts the device back. Callers: LuCI's "Reset modem", and any scripted recovery via
+`fm350-usb-reset --wait`.

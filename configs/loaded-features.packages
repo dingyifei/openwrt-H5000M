@@ -22,3 +22,7 @@ h5000m-sms
 h5000m-travelmate-defaults
 h5000m-tailscale-defaults
 h5000m-mwan3-policy
+# TTL/hop-limit normaliser for the cellular uplink. Off by default (enabled='0'), so shipping
+# it costs nothing until it is switched on. Listed explicitly because nothing depends on it -
+# the same reason luci-proto-fm350 and luci-app-fm350 are here.
+h5000m-ttl
