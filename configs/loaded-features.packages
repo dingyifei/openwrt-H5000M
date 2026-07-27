@@ -26,3 +26,8 @@ h5000m-mwan3-policy
 # it costs nothing until it is switched on. Listed explicitly because nothing depends on it -
 # the same reason luci-proto-fm350 and luci-app-fm350 are here.
 h5000m-ttl
+# Router-side FIFO archive for SMS: watches the modem's ~90-slot store and moves the
+# oldest messages to /etc/h5000m/sms-archive.json before it fills and starts rejecting
+# new ones SILENTLY. Ships enabled='0', so it costs nothing until switched on. Listed
+# explicitly because nothing depends on it.
+h5000m-sms-archive
