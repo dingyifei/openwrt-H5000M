@@ -34,6 +34,32 @@ AT+ERPRAT   AT+E5GOPT
   in CLAC but in neither the Fibocom manual nor any public source. Their set-command syntax is
   **unknown**, and guessing it is what wedged this modem before — see the probe results below.
 
+> ⛔ **This list is NOT the set of cell-related commands.** `AT+EMMCHLCK` — which actually does
+> cell locking, and works — is **absent from CLAC entirely**. That is the third time on this
+> firmware that CLAC has omitted a working command (`+CGACT`, `+CGDCONT` and `+EAPNACT` were the
+> others). The pattern matters more than any single command: **CLAC is a lower bound, never an
+> inventory.** Reasoning from its absence has now produced two wrong conclusions in this project.
+
+## `AT+EMMCHLCK` — cell locking (added 2026-07-28)
+
+```
+AT+EMMCHLCK=?  ->  +EMMCHLCK: (0-1),(0,2,7),(0,1),(0-46589),(0-511)
+AT+EMMCHLCK?   ->  +EMMCHLCK: 0
+                   +EMMCHLCK: 1,7,0,1650,187,0      <- locked; SIX fields, set form takes five
+```
+
+| Field | Range | Meaning |
+|---|---|---|
+| 1 | `0-1` | 0 unlock / 1 lock |
+| 2 | `0,2,7` | RAT — GSM / UTRAN / E-UTRAN. **No NR** |
+| 3 | `0,1` | unknown; `0` verified working |
+| 4 | `0-46589` | EARFCN |
+| 5 | `0-511` | PCI |
+
+Full behavioural notes — the `CFUN`-for-reselection distinction, that a cell lock does not stop
+NR, and that the circulating six-parameter NR example is rejected here — are in
+`FM350-GL-SETUP.md` under "Cell locking works".
+
 ---
 
 ## `AT+GTACT=?` — authoritative capability list

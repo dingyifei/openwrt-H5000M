@@ -214,6 +214,25 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
     - MediaTek's `+ESIMS` family is implemented and remains untried.
   - ⚠️ **Switching slots broke PDP activation** until the APN type was changed — never
     switch slots on a link you depend on without another way in.
+- ✅ **2.7 Radio control — bands, cells, TTL, SMS reassembly (2026-07-28).**
+  - ⭐ **Band locking** via `AT+GTACT`, behind an apply→verify→revert guard that judges
+    success on **data, not registration**. Verified including the failure path: locking
+    LTE-only to B14 (no coverage here) spent 45 s unregistered and reverted itself.
+  - ⭐ **Cell locking** via `AT+EMMCHLCK` — **this reverses an earlier conclusion.** The
+    seven-feature plan recorded "no cell lock on this modem" from the manual and a 37-command
+    `AT+CLAC`. The command exists; it is simply **absent from CLAC**, the third such omission
+    on this firmware. LTE only — the RAT field accepts `0,2,7`, so the six-parameter NR form
+    circulating online is rejected here. A cell lock does **not** stop the modem using 5G, so
+    clearing one must also restore the RAT or the user silently loses NR.
+  - ⭐ **`AT+CLAC` is a lower bound, never an inventory.** Two wrong conclusions in this
+    project now trace to reasoning from its absence — this and 2.4's eSIM verdict. The rule
+    was already written down; it was not applied.
+  - **TTL** normalised router-side (no AT command exists; the vendor firmware agreed), and
+    **multipart SMS reassembly**, whose segments arrive out of order — 6,3,2,4,5,1 on this
+    unit — and whose deletion must remove every storage slot or orphan the rest.
+  - **The blank Travelmate STA VIF was ours, and worse than cosmetic**: the old uci-defaults
+    matched any STA on `trm_wwan` and stripped its SSID/key, so a package upgrade would have
+    disabled a real configured uplink.
 - ✅ **2.6 AT layer hardening + web UI (2026-07-27).** The modem is now administrable from
   the browser, and the layer underneath it can be reasoned about.
   - ⭐ **Priority-aware AT access.** Consumers declare `AT_PRIO` (dialer 30, SMS/eSIM 20,

@@ -1129,13 +1129,57 @@ Established 2026-07-28 from the AT manual plus a live `AT+CLAC` — see
 | QCI / 5QI | — | ❌ **no command** |
 | TTL | — | ❌ **no command** — done router-side |
 
-**There is no cell lock on this modem.** The `^LTEFREQLOCK` / `^NRFREQLOCK` code in this
+> ⛔ **RETRACTED 2026-07-28 — the claim below is WRONG.** Cell locking *is* possible on this
+> modem, via **`AT+EMMCHLCK`**. The paragraph is kept rather than deleted because the way it
+> was wrong is the useful part: it inferred absence from two sources that had already been
+> documented as incomplete. See "Cell locking works" immediately below.
+
+~~**There is no cell lock on this modem.**~~ The `^LTEFREQLOCK` / `^NRFREQLOCK` code in this
 repo's git history (deleted in `b415a09`) is **Huawei syntax for the MT5700M**, a different
-modem family that `ROADMAP.md` already lists as a non-goal. `AT+CLAC` does reveal three
-undocumented cell-related commands — `+EFCELL`, `+ECELL`, `+ENBR` — which appear in neither
-the manual nor any public source. Their set syntax is unknown and **was not guessed**;
-guessing is what wedged this modem before. Band lock plus the cell viewer is the substitute:
-you can see which bands nearby cells use and act on that.
+modem family that `ROADMAP.md` already lists as a non-goal — *that part still stands.*
+`AT+CLAC` does reveal three undocumented cell-related commands — `+EFCELL`, `+ECELL`,
+`+ENBR` — whose set syntax is unknown and **was not guessed**; guessing is what wedged this
+modem before. *That also stands.* What did not stand was concluding from their absence that
+**no** cell-lock command existed.
+
+### ⭐ Cell locking works — `AT+EMMCHLCK`
+
+Verified on this unit 2026-07-28, from a user-supplied tip. **The command is absent from
+`AT+CLAC`**, which is the *third* time CLAC has under-reported here — the rule "CLAC finding a
+command proves presence; CLAC missing one proves nothing" was already written in this document
+and was not applied.
+
+```
+AT+EMMCHLCK=?  ->  +EMMCHLCK: (0-1),(0,2,7),(0,1),(0-46589),(0-511)
+                       enable   rat    ?      earfcn      pci
+AT+EMMCHLCK?   ->  +EMMCHLCK: 0                    unlocked
+                   +EMMCHLCK: 1,7,0,1650,187,0     locked - SIX fields, see below
+AT+EMMCHLCK=1,7,0,<earfcn>,<pci>                   lock
+AT+EMMCHLCK=0                                      unlock
+```
+
+**⚠️ The read form returns six fields where the set form takes five.** A value read back
+cannot be replayed verbatim; trim to the first five.
+
+**⚠️ No NR cell locking.** The RAT field accepts only `0,2,7` (GSM/UTRAN/E-UTRAN) and the
+ARFCN ceiling is 46589. The six-parameter NR form circulating online —
+`AT+EMMCHLCK=1,11,0,627264,280,3` — is from a different variant and is **rejected here**: `11`
+is not in the RAT set and an NR-ARFCN exceeds the ceiling.
+
+**⚠️ The `CFUN` cycle is required for RESELECTION, not for the lock to be accepted.** Without
+it the command succeeds and `AT+EMMCHLCK?` immediately reports the lock, so it *looks* applied
+— but the modem does not move. Locked to a visible neighbour with no `CFUN` cycle it stayed on
+its original cell for the full 30 s observed. The lock constrains *future* selection only.
+
+**⚠️ A cell lock does not stop the modem using 5G.** With an LTE cell locked and the radio
+cycled, it camped on **NR** instead. `EMMCHLCK` constrains E-UTRAN selection and nothing else —
+the same per-RAT partiality documented above for `AT+GTACT`. Pinning a cell therefore also
+needs an LTE-only RAT, and **clearing the lock must put the RAT back**, or the user unlocks a
+cell and silently loses 5G.
+
+**The claim that locking hides other cells did not reproduce.** `AT+GTCCINFO?` showed one
+neighbour both locked and unlocked; an apparent 4→1 drop was ordinary radio variation,
+confirmed by sampling unlocked.
 
 ### ⚠️ `AT+GTACT` fields 2 and 3 are preferences, not bands
 
