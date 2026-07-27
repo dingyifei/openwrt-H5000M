@@ -914,3 +914,132 @@ Storage type: MT, used: 0, total: 90
 So the SMS path works over the single AT port without disturbing the dialer. Note the
 storage reported is **`MT`**, not the `ME`/`SM` the `+CPMS` documentation describes — which
 is another reason this wrapper does not set a preferred storage by default.
+
+---
+
+# The AT layer as it now stands (2026-07-27)
+
+Everything above is history and hardware fact. This is the shape of the software that
+drives it, and the two limits that surprise people.
+
+## One port, four consumers, declared priorities
+
+The dialer, `atq`, `lpac` and `sms_tool` all contend for the single AT port. They used to
+contend as equals — whoever called `flock` at the right moment won — which stops being
+acceptable the moment a web page starts polling.
+
+Consumers now declare `AT_PRIO`:
+
+| consumer | `AT_PRIO` | why |
+|---|---|---|
+| `fm350-dialer` | 30 | bearer health outranks everything |
+| `h5000m-sms`, `h5000m-esim` | 20 | user-initiated, must complete |
+| `atq` (default) | 10 | interactive human |
+| `luci-app-fm350` status poll | 1 | cosmetic; must never delay the above |
+
+Waiters record intent in `<lockfile>.want` and decline to race when something higher is
+queued. Measured: against five competing pollers, priority 30 waited **1 s** where
+priority 1 waited **11 s**.
+
+> ⚠️ **This is approximate priority, not a queue.** `flock` has no ordering and cannot be
+> given any without a daemon that owns the port. It reliably stops a UI poll starving the
+> dialer; it is not a scheduling guarantee, and the code says so.
+
+## `atq -b` — many commands, one acquisition
+
+```sh
+atq -b 'AT+CESQ' 'AT+COPS?' 'AT+CEREG?' 'AT+CGACT?'
+```
+
+emits a stream a machine can attribute:
+
+```
+@@CMD AT+CESQ
++CESQ: 27,99,255,255,18,42,255,255,255
+@@RC 0
+```
+
+Four commands in **1.07 s** under a single lock, versus four acquisitions and four chances
+to be told the port is busy. Commands are screened against the denylist *before* the lock
+is taken, so a bad entry cannot get the port seized and then abandon the modem mid-exchange.
+
+## ⭐ `AT+CESQ` fields depend on the radio technology
+
+`AT+CSQ` is useless here — it reports `99,99`. `AT+CESQ` is the real source, but **which
+fields carry data depends on the RAT**, and this unit moved between them within a day:
+
+```
+NR  : +CESQ: 99,99,255,255,255,255,83,73,77    <- fields 7,8,9 live
+LTE : +CESQ: 27,99,255,255,16,44,255,255,255   <- fields 5,6 live
+```
+
+`255` means *not available*. Conversions per 3GPP TS 27.007:
+
+| metric | field | formula | worked example |
+|---|---|---|---|
+| LTE RSRP | 6 | `value − 140` dBm | 42 → −98 dBm |
+| LTE RSRQ | 5 | `(value/2) − 19.5` dB | 18 → −10.5 dB |
+| NR SS-RSRP | 7 | `value − 156` dBm | 83 → −73 dBm |
+| NR SS-RSRQ | 8 | `(value/2) − 43` dB | 73 → −6.5 dB |
+| NR SS-SINR | 9 | `(value/2) − 23` dB | 77 → +15.5 dB |
+
+Decide from which set is populated, not from an assumption: anything hard-coded to one RAT
+prints nonsense on the other. Cross-check the access technology in `AT+COPS?` — **7 = LTE,
+11 = NR on a 5G core**.
+
+Do **not** use `AT+C5GREG?` for a status display: it returns a bare `+C5GREG: 0` and would
+show "not registered" while `COPS` is reporting NR.
+
+## Logging: levels, components, redaction
+
+`/etc/config/h5000m` controls verbosity at runtime — no rebuild, no reflash:
+
+```sh
+uci set h5000m.logging.fm350=trace     # error|warn|info|debug|trace
+uci commit h5000m
+```
+
+`trace` prints the AT wire itself, which is the view that did not exist while the
+activation model was being reverse-engineered.
+
+> ⚠️ **Two limits that bite in practice.**
+>
+> **Levels are read once per process.** Short-lived tools (`atq`, `h5000m-sms`) pick up a
+> change on their next run. A long-lived process does not — raising the dialer's level
+> means restarting it: `ifdown cellular; ifup cellular`.
+>
+> **A process logs under one component.** The dialer sources the AT layer, so inside the
+> dialer *everything*, including AT traces, is governed by `fm350`; `modem_atd` has no
+> effect there. `modem_atd` governs the AT layer in its own tools.
+
+**Redaction is on by default and applies at every level, not just trace.** AT traffic
+carries IMSI, ICCID, EID, phone numbers and whole SMS bodies, and syslog can be forwarded
+off-box — an ICCID quoted in a warning is exactly as sensitive as one in a trace. Masking
+matches on value *shape* (long digit runs, long hex, long quoted strings) rather than on a
+list of commands, so it keeps covering commands added later. Verified against this SIM's
+real 15-digit IMSI: the value does not appear in syslog.
+
+`trace_redact 0` exists for local debugging and logs a warning when enabled.
+
+For a bounded diagnostic window without writing to flash:
+
+```sh
+h5000m-log-capture 120 fm350=trace
+```
+
+It stages the level change, follows the log to `/tmp`, and reverts on exit. `/tmp` is
+tmpfs — copy the file off the device before rebooting.
+
+## The SIM is ready later than the port answers
+
+The dialer waits for the modem to enumerate, then waits again for `AT+CPIN?` to report
+`READY`. Both waits are necessary and they are separate races:
+
+- the AT port answers before the SIM has initialised;
+- inserting a SIM makes the modem rerun carrier configuration first — a burst of
+  `+EDSBP` and `+EONSNWNAME` URCs, observed here — before CPIN settles.
+
+Checking once turned a perfectly good SIM into a blocked interface that only a manual
+`ifup` cleared. The wait is bounded at 60 s; a PIN/PUK-locked card fails immediately, since
+waiting cannot help. An **absent** SIM still blocks restarts after the timeout — that
+genuinely is not self-correcting.

@@ -157,3 +157,45 @@ exposes no CDC-ACM-class interface at all: If#0 is `02/02/ff` (RNDIS control), I
 `ff/00/00` — which `option` claims explicitly. `cdc_acm` can never bind here, so
 `kmod-usb-acm` is dead weight and is not in the shipped package set.
 See `H5000M-hardware-notes.md` §"FM350 on the clean base" for the full interface map.
+
+---
+
+# Corrections from index verification (2026-07-27)
+
+The rows below were **wrong** in this document. Each was checked by inflating the signed
+ADBd indexes for r35420, r35533 and r35551 — the method this file's own header calls
+authoritative — rather than by reading a directory listing.
+
+## 1. Three proxy engines listed as in-feed are absent
+
+`hysteria`, `trojan` / `trojan-go`, and `shadowsocks-libev` (and every `shadowsocks*`
+package) are **ABSENT at all three snapshots**. The only byte-hits are inside the
+`sing-box` and `v2raya` *description strings*, which is almost certainly how they were
+recorded as present in the first place — a substring search over an index finds prose.
+
+The real in-feed engines are **`sing-box` (1.12.22-r1)**, **`xray-core` (26.3.27-r1)** and
+**`v2ray-core` (5.49.0-r1)**. Anything PassWall2-shaped therefore has more to build than
+the earlier note implied.
+
+## 2. `sms-tool` vs `sms_tool` — the naming trap
+
+The OpenWrt package is **`sms-tool`** (hyphen), version `2025.08.23~491ffdb0-r1`, source
+`feeds/packages/utils/sms-tool`. The binary it installs is **`/usr/bin/sms_tool`**
+(underscore).
+
+`apk add sms_tool` fails, and grepping an index for `sms_tool` returns exactly one hit —
+the upstream URL inside the description — which reads as "absent" to anyone checking. This
+package is what `h5000m-sms` wraps; it already handles PDU mode, UCS2 and multipart
+reassembly, which is why this project ships no PDU codec.
+
+## 3. Feed attribution for the modem tools
+
+`comgt`, `comgt-ncm`, `uqmi` and `umbim` live in the **target `packages`** feed
+(`targets/mediatek/filogic/packages`), not `base` as the table above states. `wwan` and
+`chat` are in `base`. This does not change availability, but it breaks per-feed lookups.
+
+## Method note
+
+Package existence is best tested by the **`<name>-any` provides record** that apk emits for
+every package, not by matching filenames — filename matching is what the `~`-in-version
+gotcha defeats, and it cannot distinguish a package from a mention of one in prose.

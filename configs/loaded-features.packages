@@ -12,6 +12,9 @@ h5000m-fm350
 # nothing pulls it in. Without it LuCI renders the cellular interface as "unsupported
 # protocol type" and offers no form at all - verified missing from the r35551 loaded image.
 luci-proto-fm350
+# Network -> FM350: status, SMS and recovery. Like luci-proto-fm350 nothing depends on it,
+# so it must be listed explicitly or it never lands in the image.
+luci-app-fm350
 h5000m-lpac
 # SMS over the modem's single AT port, via sms_tool run under at-lease. sms_tool itself
 # comes from the official feed and handles PDU/UCS2/multipart, so this ships no codec.

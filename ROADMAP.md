@@ -181,6 +181,35 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
     that way. MediaTek's `+ESIMS` family is implemented and untried.
   - ⚠️ **Switching slots broke PDP activation** until the APN type was changed — never
     switch slots on a link you depend on without another way in.
+- ✅ **2.6 AT layer hardening + web UI (2026-07-27).** The modem is now administrable from
+  the browser, and the layer underneath it can be reasoned about.
+  - ⭐ **Priority-aware AT access.** Consumers declare `AT_PRIO` (dialer 30, SMS/eSIM 20,
+    `atq` 10, UI poll 1). Measured against five competing pollers: priority 30 waited
+    **1 s** where priority 1 waited **11 s**. Approximate, not a queue — `flock` has no
+    ordering without a port-owning daemon, and the code says so rather than overselling it.
+  - ⭐ **`atq -b` batch mode** — four commands in **1.07 s** under one lock acquisition,
+    emitting `@@CMD`/`@@RC` so a caller can attribute each reply.
+  - ⭐ **Tiered logging** (`/etc/config/h5000m`), runtime-configurable per component, with
+    `trace` printing the AT wire. A suppressed call costs zero forks. **Redaction runs at
+    every level** and was verified against this SIM's real 15-digit IMSI. A full bring-up
+    now costs **3 log lines**, down from dozens.
+  - ⭐ **`luci-app-fm350`** — status, SMS inbox/composer, and recovery (reconnect, plus the
+    USB `authorized` toggle that fixes a half-dead AT endpoint, verified with `stty` rather
+    than by looking for the device node).
+  - ⭐ **`AT+CESQ` is RAT-dependent.** LTE populates fields 5–6, NR populates 7–9, the rest
+    read 255; this unit switched between them within a day. Conversions and worked examples
+    are in `FM350-GL-SETUP.md`. Anything hard-coded to one RAT displays nonsense on the
+    other.
+  - Two boot races fixed: the AT port answers before the modem has finished booting, and
+    the SIM is READY later still. Both are now bounded waits rather than single checks.
+  - 🐛 `luci-proto-fm350` shipped without `return network.registerProtocol(...)`, so the
+    interface page threw "factory yields invalid constructor". `node --check` passes it —
+    a contract violation, not a syntax error — so a test now asserts the contract.
+  - 🐛 `h5000m-travelmate-defaults` created an *anonymous* `wifi-iface`, which is what
+    LuCI's wireless-migration dialog exists to rename (restarting the network to do it).
+    Now named, and it renames sections left by earlier releases so deployed units benefit.
+  - Tests: **31 invariants + 21 log-library unit tests**, both negative-controlled.
+
 - ⬜ **2.5 mwan3** — wired(1) → `trm_wwan`(2) → discovered cellular iface(3); no hard-coded
   netdev; `mwan3.user` keeps `tailscale0` out. Track **public IPs**, never the cellular
   pseudo-gateway (it never answers ICMP). Re-validate flow offloading here — offloaded
