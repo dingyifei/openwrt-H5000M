@@ -937,6 +937,52 @@ After that, `modem-ports --rescan` succeeds and `ifup cellular` comes up normall
 > operation that broke PDP activation until the APN type was changed. Treat slot switching
 > as a disruptive operation and never do it over a link you depend on.
 
+## ⛔ `sms_tool` can hang forever, and it holds the AT port while it does
+
+The most damaging bug found in this area, because it does not look like an SMS bug at all.
+
+```
+sms_tool delete 99      <- an out-of-range slot
+   -> prints "delete msg from 99 to 99", then hangs indefinitely
+   -> the process is still resident minutes later
+   -> atq answers "AT port busy"
+   -> the DIALER loses the bearer, because nothing can reach the modem
+```
+
+`at_exec` bounds its own exchanges, but `sms_tool` bypasses that entirely — it talks to the
+port directly under the lease. **The lease is only as safe as the thing holding it.** Deleting a
+multipart message loops over every fragment index, so one bad slot wedges the whole AT layer;
+the user-visible symptom was "delete does nothing", with cellular quietly dropping at the same
+time.
+
+`h5000m-sms` now wraps `sms_tool` in `timeout -s TERM -k 5` (default 45 s, override with
+`H5000M_SMS_TIMEOUT`). TERM first, then KILL, because a lease-holder that ignores TERM must
+still be made to release the port.
+
+⚠️ **The web backend passes a much shorter `H5000M_SMS_TIMEOUT=10` for deletes.** A delete of a
+real slot takes about a second — measured, six slots in 6.9 s — and 45 s is only ever spent on a
+slot that is already gone. ubus allows a single request roughly 30 s, so at 45 s one bad index
+would blow the budget and the browser would report "unknown" for a delete that actually
+succeeded.
+
+Nuance worth knowing: an **out-of-range** slot (`99`, above the 90-slot store) hangs, while an
+in-range but empty slot returns immediately. Do not assume "empty" and "invalid" behave alike.
+
+## ⚠️ `null` is not a valid ubus argument
+
+Not modem-specific, but it cost a full debugging cycle here. rpcd types every argument from the
+backend's `args` exemplar and **rejects a null outright** — `Command failed: … (Invalid
+argument)` — so the call never reaches the backend at all:
+
+```js
+callDelete(null, indexes, 'live', null)   // rejected; SMS delete silently never ran
+callDelete(0,    indexes, 'live', '')     // works
+```
+
+Use a type-appropriate empty (`0` for an integer, `''` for a string). Nothing in `node --check`
+or any rendering test can see this: the JavaScript is valid and the call is well-formed right up
+until ubus types it. `tests/test-plugin-invariants.sh` now rejects it statically.
+
 ## SMS validated against hardware on the same session
 
 `h5000m-sms status` (the `sms_tool` wrapper running under `at-lease`) returned:
@@ -1189,11 +1235,55 @@ AT+GTACT=<rat>,<PreferredAct1>,<PreferredAct2>[,<band>...]
 
 `AT+GTACT=20,103` is rejected — it puts a band number where only 2/3/6 are accepted. And the
 empty form the manual's brackets imply, `AT+GTACT=20,,,103`, is **also** rejected on this
-firmware (`+CME ERROR: phone failure`), so the preferences cannot be omitted either. Carry
-forward whatever `AT+GTACT?` currently reports.
+firmware (`+CME ERROR: phone failure`), so the preferences cannot be omitted either.
 
 RAT: 1 UMTS, 2 LTE, 4 LTE/UMTS, 10 automatic, 14 NR, 16 NR/UMTS, 17 NR/LTE, 20 NR/LTE/UMTS.
 Preference: 2 UMTS, 3 LTE, 6 NR.
+
+### ⛔ A `+GTACT` string read from the modem is NOT necessarily replayable
+
+The single nastiest trap in this command, and it defeated a restore on live hardware before it
+was understood. **The modem reports an empty preference field but refuses to be given one:**
+
+```
++GTACT: 14,6,           <- what it REPORTS for NR-only (pref2 empty)
+AT+GTACT=14,6,          -> +CME ERROR: phone failure
+AT+GTACT=14,6,6,...     -> accepted
+```
+
+It produces those empties by itself: select an LTE-only RAT while NR was preferred and it
+silently drops the now-invalid preference, storing `2,,3,…`. Read that back, replay it, and the
+write fails.
+
+This matters far beyond convenience, because **every revert path replays a captured string.**
+A revert that silently cannot restore is precisely the failure a guard exists to prevent — and
+it presents as success: the guard reports "reverted" while the modem keeps the wrong
+configuration. `fm350-radio` therefore passes every captured value through
+`gtact_replayable()`, which fills empty preferences from the string's own RAT, before replaying
+it. Any new code that stores and replays a `+GTACT` value must do the same.
+
+⚠️ A related rough edge, recorded rather than solved: when *both* preferences are empty the
+helper fills them with the same value, producing pairs like `20,6,6`. The manual's triple-mode
+table lists only pairs that differ. This firmware accepts the duplicate, but it is not a
+documented combination.
+
+### ⚠️ `Persistent: No` for `AT+GTACT` is not reliable
+
+The manual marks `+GTACT` non-persistent, and this document previously told you a reboot was
+therefore a free escape hatch from a bad band lock. **Measured 2026-07-28: it is not.** An
+NR-only lock (`RAT 14`) survived a full `sysupgrade` and reboot intact.
+
+So do not rely on a power cycle to clear a radio configuration. The reliable escape is the
+explicit one:
+
+```sh
+uci -q delete network.cellular.bands; uci -q delete network.cellular.cell_arfcn
+uci -q commit network; ifup cellular
+```
+
+or `AT+GTACT=10,…` (automatic) — noting that **automatic WIDENS rather than restores**: it
+enables every band the radio supports, which on this unit was more than the factory-enabled
+subset.
 
 ### ⚠️ Band sets are per-RAT and partial
 
