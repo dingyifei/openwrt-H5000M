@@ -1318,7 +1318,30 @@ it. Any new code that stores and replays a `+GTACT` value must do the same.
 ⚠️ A related rough edge, recorded rather than solved: when *both* preferences are empty the
 helper fills them with the same value, producing pairs like `20,6,6`. The manual's triple-mode
 table lists only pairs that differ. This firmware accepts the duplicate, but it is not a
-documented combination.
+documented combination. (The UI collapses it for display, so it no longer renders as
+"Preferred: NR > NR" — an ordering between a thing and itself.)
+
+#### It is the empty PREFERENCE that is refused — not a trailing empty band
+
+Worth stating precisely, because I got this wrong once by reasoning instead of measuring, and
+wrote the wrong version into a code comment before testing it:
+
+| Form | Result |
+|---|---|
+| `AT+GTACT=14,6,` | `rc=2` `+CME ERROR: phone failure` |
+| `AT+GTACT=14,,` | `rc=2` `+CME ERROR: phone failure` |
+| `AT+GTACT=14,,6` | `rc=2` `+CME ERROR: phone failure` |
+| `AT+GTACT=14,6,6,` | **`rc=0` — accepted** |
+| `AT+GTACT=14,6,6` | `rc=0` — accepted |
+
+So a *trailing* empty field (an absent band list) is fine; only an empty **preference** is
+rejected. Calibrated against `AT` (rc=0) and a bogus command (rc=2, `+CME ERROR: unknown`), so
+the status genuinely discriminates.
+
+⚠️ **A band-less string is not neutral — it enables EVERY band of that RAT.** `AT+GTACT=2,3,3`
+read back as `2,3,3,101,102,…,166`, the full LTE set. Never use the short form meaning "leave
+the bands as they are"; it is only a correct *restore* when the captured string had no band
+list either, which itself already meant "all bands".
 
 ### ⛔ `Persistent: No` for `AT+GTACT` is wrong, and so is any "a reboot clears it" claim
 
