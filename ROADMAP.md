@@ -267,6 +267,23 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
   pseudo-gateway (it never answers ICMP). Re-validate flow offloading here — offloaded
   flows bypass netfilter and can defeat fwmark policy routing.
 
+- 🔄 **2.8 v2rayA proxy manager (2026-07-28) — software complete; on-device verification
+  pending the next loaded image.** A full proxy manager baked into the loaded image
+  **straight from the official feeds** — the first loaded feature that is *not* a signed
+  `h5000m-*` wrapper, because v2rayA's whole stack is already in-feed (no source build, no
+  plugin repo; contrast PassWall2 below). Package set in `configs/loaded-features.packages`:
+  `v2raya` + `luci-app-v2raya` + `luci-i18n-v2raya-zh-cn`, engine `xray-core` (VLESS/XTLS/
+  Reality superset of v2ray-core; v2rayA declares no hard core dep, so it is listed
+  explicitly), routing DBs `v2ray-geoip`/`v2ray-geosite`, and `kmod-nft-tproxy` +
+  `kmod-nft-socket` for transparent-gateway mode (the socket match is what v2rayA's tproxy
+  ruleset needs — tproxy alone won't load). Ships **upstream defaults**: own web UI on
+  tcp/2017 (LAN-only behind the default firewall), no baked nodes or routing, first-run
+  admin setup in the browser. `is_forbidden_feature_package` extended to keep the whole
+  `v2raya`/`luci-app-v2raya`/`luci-i18n-v2raya`/`v2ray-core` family out of the clean base
+  (its engines and the tproxy kmods were already forbidden there).
+  - ⬜ On-device check after the loaded image builds: xray-core resolves the geoip/geosite
+    `.dat` files, and the UI comes up on `:2017`.
+
 ## Later — deferred, not scheduled
 - ⬜ **OpenConnect/Cisco** — disabled `cisco` interface; **auth feasibility gate**
   (SAML/MFA/cookie) before promising unattended reconnect.
@@ -274,6 +291,8 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
   tables, DNS owner, IPv6 policy; disjoint from mwan3 `0x3F00` / Tailscale `0xff0000`),
   then a transactional apply/probe/rollback implementation.
 - ⬜ **PassWall2 / luci-app-epm** — the only two packages needing third-party source builds.
+  The in-feed **v2rayA** (2.8) now covers the proxy-manager need without a source build;
+  PassWall2 stays deferred for those who specifically want its rule set.
 
 ## Security, provenance, CI (continuous)
 - 🔄 Done: secret scan, SHA256SUMS over sidecars, CI, signing-key gate.
