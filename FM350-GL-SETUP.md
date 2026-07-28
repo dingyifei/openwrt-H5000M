@@ -1227,6 +1227,59 @@ cell and silently loses 5G.
 neighbour both locked and unlocked; an apparent 4→1 drop was ordinary radio variation,
 confirmed by sampling unlocked.
 
+#### ⛔ The lock binds IDLE-mode selection. The network still moves you once data flows.
+
+This is the most important limit of the feature, and it is invisible unless you look for it.
+Measured 2026-07-28 with the lock set to EARFCN 1650 / PCI 188 and never changed during the run:
+
+| Bearer | Serving cell |
+|---|---|
+| **Down (idle)** | `1650/188` — the locked cell — for the full 90 s sampled, without a single deviation |
+| **Up (data)** | held `188` for ~35 s, then moved to `1650/187` and stayed there |
+
+RSRP was comparable on both cells (≈ −95 dBm), so this is not "the stronger cell wins" — it is
+**operator-controlled handover**. A UE-side cell lock constrains idle-mode cell *selection*;
+once the UE is in connected mode, handover is the network's decision and the lock gets no vote.
+
+Two earlier observations that looked contradictory both fall out of this:
+
+- Locking to an **absent** PCI killed service entirely (the guard reverted) — proving the lock
+  really is enforced at selection time.
+- Locking to a **real neighbour** left us camped elsewhere with data flowing — because the
+  network had already handed us back.
+
+**Consequences for anything built on this:**
+
+- **Do not treat "registered, and data flows" as proof the lock took.** The guard used to, and
+  reported `cell lock verified` while camped on a different cell. It now reads the serving PCI
+  and says where it actually landed, so a Cells page showing a different cell reads as the
+  operator's choice rather than as a bug.
+- **A cell lock is a preference in practice, not a pin.** Tell users that plainly; someone who
+  locks a cell and watches the UI show another one will otherwise assume the feature is broken.
+- If you want to *observe* the lock working, look while the bearer is **down**.
+
+#### ⚠️ A neighbour row's EARFCN can be unusable as printed
+
+While hunting for a lock target, the only LTE neighbour on offer read:
+
+```
+2,4,,,FFFFFFF,00FFFFFFF,165084,188,,426,426,15
+                        ^^^^^^ "EARFCN"
+```
+
+The field layout matches the manual exactly (§11.1.15 LTE neighbour:
+`…,<earfcn>,<physicalcellId>,<bandwidth>,<rxlev>,<rsrp>,<rsrq>`), so this is not a parsing
+error — but `165084` is **above the modem's own `EMMCHLCK` ceiling of 46589** and cannot be
+submitted. Two other fields in the same row are also outside their documented ranges (`rxlev`
+and `rsrp` are specified `0-255`, both read `426`), and `tac`/`cellid` are the all-ones
+"unknown" markers. The cell was nevertheless real: locking to **EARFCN 1650** — the carrier the
+serving cell was on — with PCI 188 registered and carried data.
+
+So: **treat a neighbour row's ARFCN as a hint, not an address.** The PCI was trustworthy; the
+ARFCN was not. Anything offering a one-click "lock to this neighbour" should validate the ARFCN
+against `AT+EMMCHLCK=?` before presenting it as actionable, or the click produces an error the
+user cannot act on.
+
 ### ⚠️ `AT+GTACT` fields 2 and 3 are preferences, not bands
 
 ```
@@ -1267,23 +1320,49 @@ helper fills them with the same value, producing pairs like `20,6,6`. The manual
 table lists only pairs that differ. This firmware accepts the duplicate, but it is not a
 documented combination.
 
-### ⚠️ `Persistent: No` for `AT+GTACT` is not reliable
+### ⛔ `Persistent: No` for `AT+GTACT` is wrong, and so is any "a reboot clears it" claim
 
 The manual marks `+GTACT` non-persistent, and this document previously told you a reboot was
-therefore a free escape hatch from a bad band lock. **Measured 2026-07-28: it is not.** An
-NR-only lock (`RAT 14`) survived a full `sysupgrade` and reboot intact.
+therefore a free escape hatch from a bad band lock. **It is not**, and the second measurement
+is much stronger than the first:
 
-So do not rely on a power cycle to clear a radio configuration. The reliable escape is the
-explicit one:
+| Measured | What survived |
+|---|---|
+| 2026-07-28, first pass | An NR-only lock (`RAT 14`) survived a full `sysupgrade` and reboot |
+| 2026-07-28, controlled | After a genuine reboot (uptime 28 s) **with nothing whatsoever in UCI**, the modem still reported the narrowed `+GTACT: 2,3,3,…` **and** `+EMMCHLCK: 1,7,0,1650,188,0` |
+
+The controlled run is the one that settles it: with no router-side configuration to replay,
+anything that came back came back from the **modem's own non-volatile memory**. `AT+EMMCHLCK`
+persists too, which contradicts the widely-circulated tip that a cell lock is lost on power
+loss. Note the honest limit: a warm reboot need not cut M.2 power, so **a cold power-off is
+still untested** — what is settled is that *rebooting is not an escape hatch*.
+
+⛔ **The UCI recipe this section used to recommend was never real.** It told you to
+`uci -q delete network.cellular.bands` / `.cell_arfcn`. Nothing ever read those options — not
+the guard, not the dialer, not `/lib/netifd/proto/fm350.sh` — so the commands were a no-op that
+*looked* like a fix. They have been removed from the code, and a `uci-defaults` migration drops
+them from devices already carrying them. The real escapes are:
 
 ```sh
-uci -q delete network.cellular.bands; uci -q delete network.cellular.cell_arfcn
-uci -q commit network; ifup cellular
+# clear a cell lock (the guard also restores the pre-lock band string)
+printf 'ACTION=cell\nCELL_ARFCN=\nCELL_PCI=\nCELL_LTE_ONLY=0\n' > /var/run/fm350-radio.req
+/etc/init.d/fm350-radio start
 ```
 
-or `AT+GTACT=10,…` (automatic) — noting that **automatic WIDENS rather than restores**: it
-enables every band the radio supports, which on this unit was more than the factory-enabled
-subset.
+or, in the UI, **Unlock** on the Radio page — reachable even with the uplink down, because LuCI
+is served over the LAN. `AT+GTACT=10,…` (automatic) also works but **WIDENS rather than
+restores**: it enables every band the radio supports, which on this unit was more than the
+factory-enabled subset.
+
+Two consequences worth internalising, both of which produced real bugs here:
+
+- **A record of persistent modem state must itself be persistent.** The pre-lock band string
+  lived in `/var/run` *because* of the "reboot clears both sides" belief. Only tmpfs was
+  actually cleared, so the radio stayed pinned to LTE while the record of what it had been was
+  gone — and unlock then silently restored nothing while reporting success. It now lives in
+  `/etc/h5000m/` with a `keep.d` entry.
+- **There is nothing to "opt in" to.** A "keep after reboot" flag is meaningless on this modem;
+  it persists either way.
 
 ### ⚠️ Band sets are per-RAT and partial
 
