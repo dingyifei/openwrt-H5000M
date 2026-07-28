@@ -99,12 +99,21 @@ jobs:
               --commit "$head_sha" --status success --limit 1 \
               --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
             [ -n "${run_id:-}" ] && break
-            # Stop early if that SHA's run has already finished unsuccessfully - waiting
+            # Stop early if that SHA's run has already finished UNSUCCESSFULLY - waiting
             # out the full timeout would only delay the same failure.
             state="$(gh run list --repo "$repo" --workflow build.yml \
               --commit "$head_sha" --limit 1 \
               --json status,conclusion --jq '"\(.[0].status)/\(.[0].conclusion)"' 2>/dev/null || true)"
             case "$state" in
+              # ⚠️ completed/success MUST fall through to another poll, not be treated as
+              # terminal-bad. `gh run list --status success` lags the run's own completion by
+              # a few seconds, so on the very iteration the plugins build finishes WELL, the
+              # run-id query above can still return empty while this query already says
+              # "completed/success". A bare `completed/*)` arm therefore aborted on SUCCESS -
+              # and it fired exactly when both repos are pushed together, which is the normal
+              # case this whole polling loop exists to handle. Measured: the 2026-07-28 base
+              # build skipped the loaded image with "ended completed/success".
+              completed/success) : ;;
               completed/*) echo "::warning::plugin build for ${head_sha} ended ${state}; loaded image SKIPPED"; exit 1 ;;
             esac
             echo "waiting for plugin build of ${head_sha} (state ${state:-unknown})"
