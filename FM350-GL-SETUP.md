@@ -319,11 +319,41 @@ handling the one shipped implementation uses (**retry the same command**).
 **Not a bug.** This firmware does not implement `GTRNDIS`; MediaTek FM350 uses `CGACT`.
 Ignore it.
 
-### F. QModem re-dials repeatedly and the IP keeps changing
-**Cause:** the monitor thinks the link is down (usually because `ip_change` failed to read
-`CGPADDR` under AT contention — see B) and re-dials, getting a new IP each time. Fix the
-contention (B), then the IP stabilizes. Each re-attach can assign a new IP, so the `eth2`
-address must always be re-synced to the current `AT+CGPADDR=1` value.
+### F. Data silently stops while the modem stays "up" — a **dead-but-addressed bearer**
+**Symptom:** clients lose internet over cellular, but LuCI shows the interface up with an IP,
+`AT+CPIN?` is `READY`, `AT+CEREG?` is registered, and a manual reconnect (`ifup cellular`)
+fixes it — for a while.
+
+**Cause — measured on this unit (2026-07-28/29):** the carrier tears down the data bearer,
+but the FM350 **keeps advertising the old IPv4 via `AT+CGPADDR` indefinitely** (observed: a
+dead `100.98.157.29` reported for ~1.5 h while the link passed zero packets; `AT+CGACT?`
+listed *no* active context). So "we still hold an address" is **not** proof data flows. A
+re-dial (`AT+EAPNACT` → fresh context/IP) restores it until the carrier drops it again — this
+is the *reconnect fixes it* pattern, and it correlates with marginal RSRQ.
+
+**Discriminator (one command):**
+```
+ping -I eth2 -c3 1.1.1.1        # forces egress out the modem regardless of default route
+```
+If this is 100% loss while `AT+CGPADDR=<aid>` still returns an IPv4, the bearer is dead but
+addressed. Cross-check `AT+CGACT?` (the context is usually gone from the active list) — note
+the modem often keeps the stale `CGPADDR` even so.
+
+**Fix (shipped):** `fm350-dialer` now runs a **watchdog** (`fm350-watchdog.sh`): it actively
+probes the data path (`ping -I $netdev` to `1.1.1.1 8.8.8.8 9.9.9.9`, a cycle counts as down
+only if *all* fail) and, after `probe_fails` consecutive failures, climbs a recovery ladder —
+**re-dial → modem reset (`fm350-usb-reset`) → reboot** — with a persistent guard that caps
+reboots so a genuinely-down carrier can't reboot-loop the router. The counters clear only
+after data has *held* for `healthy_hold` seconds, so a flapping link re-dials without storming
+the tiers. All knobs are UCI options on the `cellular` interface (`watchdog`, `probe_targets`,
+`probe_interval`, `probe_timeout`, `probe_fails`, `redial_limit`, `modem_reset_limit`,
+`reboot_limit`, `healthy_hold`); `watchdog=0` disables it, `reboot_limit=0` keeps the ladder
+but never reboots. Timing is counter-based, never wall-clock (this board has no RTC — see the
+dialer's modem-wait note).
+
+> Historical note: an earlier QModem-era version of this entry blamed AT-port contention in
+> `ip_change` (see **B**). Contention is a real, separate failure, but it is **not** the cause
+> here — the bearer genuinely dies while the host keeps a stale address.
 
 ---
 
