@@ -31,55 +31,60 @@ runs it as a service and gives it the profile below.
 nikki runs a mihomo `config.yaml`. Point it at the profile below (paste your JustMySocks URL into
 `url:`). This is the minimal config that does auto-update + failover; extend the `rules` to taste.
 
-```yaml
-# ---- basic transparent-proxy plumbing (nikki manages the tproxy/nft side) ----
-mixed-port: 7890
-mode: rule
-log-level: warning
-# nikki enables tun/tproxy itself; leave the interface bits to the LuCI app.
+> This is exactly what the **`h5000m-nikki-defaults`** package ships to `/etc/nikki/profiles/jms.yaml`
+> on a fresh install (with placeholder URLs) — so usually you just fill in the two `url:` fields.
+> nikki's *mixin* supplies the ports/tun/dns/sniffer, so the profile only needs providers +
+> groups + rules.
 
-# ---- the subscription, auto-refreshed ----------------------------------------
-# `interval` is the auto-update period in SECONDS: mihomo re-fetches on that schedule and, if a
-# fetch fails, KEEPS the last good copy and retries next interval (exactly your "refresh subs in
-# case they failed" requirement). health-check is what makes failover possible (below).
+```yaml
+# ---- the subscription(s), auto-refreshed -------------------------------------
+# TWO providers = JMS's two mirror domains for the SAME service (jjsubmarines.com + jmssub.net).
+# Paste your sub URL into both (same service/id, just the two domains): if one domain is blocked,
+# the other still delivers the node list. JMS returns a base64 ss/vless/vmess list, which mihomo
+# parses directly here (nikki's built-in "Subscription" page can't — it wants Clash YAML).
+# `interval` is the auto-refresh period in SECONDS; a failed fetch keeps the last-good copy.
 proxy-providers:
   jms:
     type: http
-    url: "https://<PASTE-YOUR-JUSTMYSOCKS-SUBSCRIPTION-URL>"
-    interval: 3600            # refresh hourly
+    url: "https://jjsubmarines.com/members/getsub.php?service=YOUR_SERVICE&id=YOUR_ID"
     path: ./providers/jms.yaml
-    # Only pull the nodes you actually want into the failover set. JustMySocks names its nodes
-    # things like "JMS-xxx ..."; adjust the regex to include SS + v2ray but drop info/traffic
-    # pseudo-nodes some panels inject.
-    filter: "(?i)(jms|gia|bwg|shadowsocks|ss|v2ray|vmess)"
-    exclude-filter: "(?i)(剩余|流量|expire|traffic|官网|website)"
-    health-check:
-      enable: true
-      url: https://www.gstatic.com/generate_204
-      interval: 60            # probe every 60s
-      timeout: 2000           # ms
-      lazy: true              # only probe the group that is actually in use
+    interval: 3600            # refresh hourly
+    health-check: { enable: true, url: "https://www.gstatic.com/generate_204", interval: 60, timeout: 2000, lazy: true }
+  jms-backup:
+    type: http
+    url: "https://jmssub.net/members/getsub.php?service=YOUR_SERVICE&id=YOUR_ID"
+    path: ./providers/jms-backup.yaml
+    interval: 3600
+    health-check: { enable: true, url: "https://www.gstatic.com/generate_204", interval: 60, timeout: 2000, lazy: true }
 
 # ---- the failover group ------------------------------------------------------
 # url-test = automatic: mihomo keeps every node's latency fresh from the health-check above and
-# routes through the lowest-latency HEALTHY node. When your current node stops answering, it is
-# dropped and traffic moves to the next healthy one automatically; when it recovers it becomes
-# eligible again. `tolerance` stops it flapping between two near-equal nodes.
+# routes through the lowest-latency HEALTHY node across BOTH providers. When your current node
+# stops answering it is dropped and traffic moves to the next healthy one, then back when it
+# recovers. `tolerance` stops flapping between two near-equal nodes.
 proxy-groups:
-  - name: AUTO
-    type: url-test
-    use: [jms]
-    url: https://www.gstatic.com/generate_204
-    interval: 60
-    tolerance: 50             # ms — don't switch for <50ms latency differences
-  # A manual override group, handy for testing a specific node.
   - name: PROXY
     type: select
     proxies: [AUTO]
-    use: [jms]
+    use: [jms, jms-backup]
+  - name: AUTO
+    type: url-test
+    use: [jms, jms-backup]
+    url: "https://www.gstatic.com/generate_204"
+    interval: 60
+    tolerance: 50             # ms
 
+# LAN/private go DIRECT via IP-CIDR (no geodata download needed); everything else via PROXY.
+# To also bypass mainland-China destinations, add `GEOIP,CN,DIRECT` before MATCH once mihomo
+# geodata is in place (mihomo downloads the MMDB on first run; needs internet).
 rules:
-  - GEOIP,CN,DIRECT          # keep China-direct; nikki ships the geoip_cn nft rules too
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
   - MATCH,PROXY
 ```
 

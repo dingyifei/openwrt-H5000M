@@ -49,3 +49,7 @@ nikki
 # LuCI app for nikki (subscriptions, groups, dashboard). Depends on nikki; listed explicitly
 # because nothing pulls it in - the same reason the fm350 LuCI apps are listed above.
 luci-app-nikki
+# First-boot default: installs a credential-free JMS/mihomo profile (proxy-provider with a
+# placeholder sub URL + url-test failover) if none exists, and points nikki at it. Ships no
+# subscription URL and does not enable nikki. See docs/nikki-justmysocks-setup.md.
+h5000m-nikki-defaults
