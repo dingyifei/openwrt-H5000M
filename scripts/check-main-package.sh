@@ -162,7 +162,7 @@ is_forbidden_feature_package() {
     openconnect|luci-proto-openconnect*|vpnc-scripts|lpac|luci-app-epm*|\
     dnsmasq-full|kmod-nft-socket|kmod-nft-tproxy|\
     luci-app-passwall*|luci-app-homeproxy*|luci-app-mosdns*|\
-    v2raya|v2raya-*|luci-app-v2raya*|luci-i18n-v2raya*|v2ray-core|v2ray-core-*|\
+    nikki|nikki-*|luci-app-nikki*|luci-i18n-nikki*|mihomo|mihomo-*|v2ray-core|v2ray-core-*|\
     xray-core|xray-core-*|xray-plugin|xray-plugin-*|sing-box|sing-box-*|\
     hysteria|hysteria-*|hysteria2|hysteria2-*|tuic-client|tuic-client-*|naiveproxy|naiveproxy-*|\
     qmodem|qmodem-*|ubus-at-daemon|ubus-at-daemon-*|sms-tool_q|sms-tool_q-*|at-webserver|at-webserver-*)

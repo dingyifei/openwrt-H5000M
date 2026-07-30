@@ -32,28 +32,20 @@ h5000m-ttl
 # explicitly because nothing depends on it.
 h5000m-sms-archive
 
-# --- v2rayA proxy manager (2026-07-28) --------------------------------------------------
-# Unlike everything above, these are NOT signed h5000m-* wrappers: v2rayA and its whole
-# stack already live in the official feeds, so they are baked straight in - no source build
-# and no plugin repo (contrast PassWall2, third-party and still deferred). They ship with
-# upstream package defaults: v2rayA runs its own web UI on tcp/2017 (LAN-only behind the
-# default firewall), with no baked nodes or routing and a first-run admin setup in the
-# browser. Every name here is asserted present by the loaded-image manifest check.
-v2raya
-# LuCI menu entry that links to the v2rayA UI; depends on v2raya.
-luci-app-v2raya
-# Simplified-Chinese LuCI strings. VERIFIED the feed ships this as zh-cn, not zh-hans.
-luci-i18n-v2raya-zh-cn
-# Proxy engine. xray-core is the VLESS/XTLS/Reality superset of v2ray-core; v2rayA declares
-# no hard core dependency, so the engine must be listed explicitly or none is installed.
-xray-core
-# Routing databases (geoip.dat/geosite.dat) the engine consults for rule-based and
-# GFW-style routing. Listed explicitly - nothing pulls them in.
-v2ray-geoip
-v2ray-geosite
-# Transparent-gateway proxy. kmod-nft-tproxy provides the nft `tproxy` statement; v2rayA's
-# generated ruleset also uses the nft `socket` match, so kmod-nft-socket is its mandatory
-# companion - tproxy without it means the transparent rules never load. Both are forbidden
-# in the clean base (plugin-owned) and belong only here.
-kmod-nft-tproxy
-kmod-nft-socket
+# --- nikki proxy manager (mihomo/Clash.Meta) (2026-07-30) --------------------------------
+# Replaces v2rayA (removed): v2rayA had no self-updating subscriptions and no health-checked
+# failover, which is the whole reason for the switch. nikki drives the mihomo core, whose
+# proxy-providers auto-refresh subscriptions and whose url-test/fallback groups fail over
+# automatically. See docs/nikki-justmysocks-setup.md for the runtime profile.
+#
+# Unlike v2rayA (which was in the official feeds), nikki and the mihomo core are third-party
+# and NOT in the official feeds, so they are BUILT FROM SOURCE and signed into the plugin
+# offline-repo (openwrt-H5000M-plugins: configs/sources.lock pins nikkinikki-org/OpenWrt-nikki;
+# it builds mihomo-meta + nikki + luci-app-nikki). This is the first source-built loaded
+# feature. Top-level names only: the mihomo core arrives via nikki's `+mihomo` dependency
+# (mihomo-meta PROVIDES mihomo, from our signed repo), and nikki's DEPENDS pull curl, yq,
+# firewall4, ip-full and the tproxy/tun/inet-diag/dummy kmods from the official feed.
+nikki
+# LuCI app for nikki (subscriptions, groups, dashboard). Depends on nikki; listed explicitly
+# because nothing pulls it in - the same reason the fm350 LuCI apps are listed above.
+luci-app-nikki

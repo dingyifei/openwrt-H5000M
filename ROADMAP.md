@@ -267,22 +267,26 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
   pseudo-gateway (it never answers ICMP). Re-validate flow offloading here — offloaded
   flows bypass netfilter and can defeat fwmark policy routing.
 
-- 🔄 **2.8 v2rayA proxy manager (2026-07-28) — software complete; on-device verification
-  pending the next loaded image.** A full proxy manager baked into the loaded image
-  **straight from the official feeds** — the first loaded feature that is *not* a signed
-  `h5000m-*` wrapper, because v2rayA's whole stack is already in-feed (no source build, no
-  plugin repo; contrast PassWall2 below). Package set in `configs/loaded-features.packages`:
-  `v2raya` + `luci-app-v2raya` + `luci-i18n-v2raya-zh-cn`, engine `xray-core` (VLESS/XTLS/
-  Reality superset of v2ray-core; v2rayA declares no hard core dep, so it is listed
-  explicitly), routing DBs `v2ray-geoip`/`v2ray-geosite`, and `kmod-nft-tproxy` +
-  `kmod-nft-socket` for transparent-gateway mode (the socket match is what v2rayA's tproxy
-  ruleset needs — tproxy alone won't load). Ships **upstream defaults**: own web UI on
-  tcp/2017 (LAN-only behind the default firewall), no baked nodes or routing, first-run
-  admin setup in the browser. `is_forbidden_feature_package` extended to keep the whole
-  `v2raya`/`luci-app-v2raya`/`luci-i18n-v2raya`/`v2ray-core` family out of the clean base
-  (its engines and the tproxy kmods were already forbidden there).
-  - ⬜ On-device check after the loaded image builds: xray-core resolves the geoip/geosite
-    `.dat` files, and the UI comes up on `:2017`.
+- 🔄 **2.8 nikki (mihomo) proxy manager (2026-07-30) — replaces v2rayA; software complete,
+  on-device verification pending the next loaded image.** v2rayA was removed: it had neither
+  self-updating subscriptions nor health-checked failover, which is exactly what was wanted.
+  **nikki** drives the **mihomo/Clash.Meta** core, whose `proxy-providers` auto-refresh a
+  subscription on an interval (keeping the last-good copy on a failed fetch) and whose
+  `url-test`/`fallback` group fails over to another node automatically — see
+  `docs/nikki-justmysocks-setup.md` for the runtime profile.
+  - **This is the first source-built loaded feature.** Unlike v2rayA (in the official feeds),
+    mihomo is not in the official feeds and nikki is third-party, so both are **built from
+    source and signed** into the plugin offline-repo. That required implementing the
+    third-party source-build pipeline that was a loud stub: `openwrt-H5000M-plugins`
+    `configs/sources.lock` now pins `nikkinikki-org/OpenWrt-nikki` (commit-anchored, archive
+    sha256 verified) and builds `mihomo-meta` + `nikki` + `luci-app-nikki`; `fetch-sources.sh`
+    materialises them into an aggregate h5000m feed; `build-packages.sh` learned to sign an
+    **arch-specific** package (mihomo is a compiled aarch64 Go binary) alongside the noarch set.
+  - `configs/loaded-features.packages`: top-level `nikki` + `luci-app-nikki` (the mihomo core
+    arrives via nikki's `+mihomo` dep from our signed repo; the tproxy/tun kmods, curl, yq via
+    nikki's DEPENDS). Both clean-base denylists updated to keep `nikki`/`mihomo` out of the base.
+  - ⬜ On-device check after the loaded image builds: nikki UI up; a JustMySocks subscription
+    auto-updates on its interval; blocking the active node triggers `url-test` failover.
 
 ## Later — deferred, not scheduled
 - ⬜ **OpenConnect/Cisco** — disabled `cisco` interface; **auth feasibility gate**
@@ -290,9 +294,10 @@ baseline gate (0.4) verified on the physical H5000M on 2026-07-25.
 - ⬜ **Six-state egress selector** — routing contract first (numeric fwmarks/priorities/
   tables, DNS owner, IPv6 policy; disjoint from mwan3 `0x3F00` / Tailscale `0xff0000`),
   then a transactional apply/probe/rollback implementation.
-- ⬜ **PassWall2 / luci-app-epm** — the only two packages needing third-party source builds.
-  The in-feed **v2rayA** (2.8) now covers the proxy-manager need without a source build;
-  PassWall2 stays deferred for those who specifically want its rule set.
+- ⬜ **PassWall2 / luci-app-epm** — third-party source builds. No longer blocked on tooling:
+  the source-build pipeline built for nikki (2.8) is general (`configs/sources.lock` +
+  `fetch-sources.sh`), so adding either is now just another pinned source. Deferred by choice,
+  not capability — nikki (2.8) already covers the proxy-manager need.
 
 ## Security, provenance, CI (continuous)
 - 🔄 Done: secret scan, SHA256SUMS over sidecars, CI, signing-key gate.
